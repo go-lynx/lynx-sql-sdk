@@ -11,13 +11,12 @@ import (
 	"time"
 
 	"github.com/go-kratos/kratos/v2/config"
-	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-lynx/lynx"
-	"github.com/go-lynx/lynx/plugins"
-	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx-mysql"
 	"github.com/go-lynx/lynx-pgsql"
 	"github.com/go-lynx/lynx-pgsql/conf"
+	"github.com/go-lynx/lynx-sql-sdk/interfaces"
+	"github.com/go-lynx/lynx/plugins"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -205,13 +204,13 @@ func createMySQLRuntime() plugins.Runtime {
 	mockConfig := &mockConfig{
 		values: map[string]interface{}{
 			"lynx.mysql": &interfaces.Config{
-				Driver:              "mysql",
-				DSN:                 "lynx:lynx123456@tcp(localhost:3306)/lynx_test?charset=utf8mb4&parseTime=True",
-				MaxOpenConns:        10,
-				MaxIdleConns:        5,
-				ConnMaxLifetime:     3600,
-				ConnMaxIdleTime:     300,
-				HealthCheckInterval: 0,
+				Driver:                "mysql",
+				DSN:                   "lynx:lynx123456@tcp(localhost:3306)/lynx_test?charset=utf8mb4&parseTime=True",
+				MaxOpenConns:          10,
+				MaxIdleConns:          5,
+				ConnMaxLifetime:       3600,
+				ConnMaxIdleTime:       300,
+				HealthCheckInterval:   0,
 				AutoReconnectInterval: 0,
 			},
 		},
@@ -271,13 +270,12 @@ func (m *mockValue) Scan(dest interface{}) error {
 	return nil
 }
 
-func (m *mockValue) String() (string, error) { return "", nil }
-func (m *mockValue) Bool() (bool, error) { return false, nil }
-func (m *mockValue) Int() (int64, error) { return 0, nil }
-func (m *mockValue) Float() (float64, error) { return 0, nil }
+func (m *mockValue) String() (string, error)          { return "", nil }
+func (m *mockValue) Bool() (bool, error)              { return false, nil }
+func (m *mockValue) Int() (int64, error)              { return 0, nil }
+func (m *mockValue) Float() (float64, error)          { return 0, nil }
 func (m *mockValue) Duration() (time.Duration, error) { return 0, nil }
 
-func (m *mockConfig) Load() error { return nil }
+func (m *mockConfig) Load() error                               { return nil }
 func (m *mockConfig) Watch(key string, o config.Observer) error { return nil }
-func (m *mockConfig) Close() error { return nil }
-
+func (m *mockConfig) Close() error                              { return nil }

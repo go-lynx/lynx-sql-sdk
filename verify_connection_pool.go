@@ -4,10 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/go-lynx/lynx-sql-sdk/base"
-	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx-mysql"
 	"github.com/go-lynx/lynx-pgsql"
+	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 )
 
 func main() {
@@ -54,7 +53,7 @@ func checkConnectionPoolConfig(name string, config *interfaces.Config) {
 
 	// 检查配置合理性
 	if config.MaxIdleConns > config.MaxOpenConns {
-		fmt.Printf("    ⚠️  警告: MaxIdleConns (%d) > MaxOpenConns (%d)\n", 
+		fmt.Printf("    ⚠️  警告: MaxIdleConns (%d) > MaxOpenConns (%d)\n",
 			config.MaxIdleConns, config.MaxOpenConns)
 		os.Exit(1)
 	}
@@ -87,7 +86,7 @@ func validateConfig(config *interfaces.Config) {
 	}
 
 	if config.MaxIdleConns > config.MaxOpenConns {
-		issues = append(issues, fmt.Sprintf("MaxIdleConns (%d) 不能大于 MaxOpenConns (%d)", 
+		issues = append(issues, fmt.Sprintf("MaxIdleConns (%d) 不能大于 MaxOpenConns (%d)",
 			config.MaxIdleConns, config.MaxOpenConns))
 	}
 
@@ -109,4 +108,3 @@ func validateConfig(config *interfaces.Config) {
 		fmt.Println("  ✅ 所有配置验证通过")
 	}
 }
-

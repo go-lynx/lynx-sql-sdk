@@ -2,15 +2,14 @@ package base
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/go-kratos/kratos/v2/config"
 	"github.com/go-kratos/kratos/v2/log"
-	"github.com/go-lynx/lynx/plugins"
 	"github.com/go-lynx/lynx-sql-sdk/interfaces"
+	"github.com/go-lynx/lynx/plugins"
 )
 
 // mockRuntime is a mock implementation of plugins.Runtime for testing
@@ -23,36 +22,43 @@ func (m *mockRuntime) GetConfig() config.Config {
 }
 
 func (m *mockRuntime) AddListener(listener plugins.EventListener, filter *plugins.EventFilter) {}
-func (m *mockRuntime) AddPluginListener(pluginName string, listener plugins.EventListener, filter *plugins.EventFilter) {}
-func (m *mockRuntime) CleanupResources(pluginName string) error { return nil }
-func (m *mockRuntime) EmitEvent(event plugins.PluginEvent) {}
+func (m *mockRuntime) AddPluginListener(pluginName string, listener plugins.EventListener, filter *plugins.EventFilter) {
+}
+func (m *mockRuntime) CleanupResources(pluginName string) error                                 { return nil }
+func (m *mockRuntime) EmitEvent(event plugins.PluginEvent)                                      {}
 func (m *mockRuntime) EmitPluginEvent(pluginName string, eventType string, data map[string]any) {}
-func (m *mockRuntime) GetCurrentPluginContext() string { return "" }
-func (m *mockRuntime) GetEventHistory(filter plugins.EventFilter) []plugins.PluginEvent { return nil }
-func (m *mockRuntime) GetEventStats() map[string]any { return nil }
-func (m *mockRuntime) GetLogger() log.Logger { return log.DefaultLogger }
-func (m *mockRuntime) GetPluginEventHistory(pluginName string, filter plugins.EventFilter) []plugins.PluginEvent { return nil }
-func (m *mockRuntime) GetResourceStats() map[string]any { return nil }
-func (m *mockRuntime) GetSharedResource(name string) (any, error) { return nil, nil }
-func (m *mockRuntime) GetPrivateResource(name string) (any, error) { return nil, nil }
-func (m *mockRuntime) GetResource(name string) (any, error) { return nil, nil }
-func (m *mockRuntime) GetResourceInfo(name string) (*plugins.ResourceInfo, error) { return nil, nil }
-func (m *mockRuntime) ListResources() []*plugins.ResourceInfo { return nil }
-func (m *mockRuntime) RegisterPrivateResource(name string, resource any) error { return nil }
-func (m *mockRuntime) RegisterResource(name string, resource any) error { return nil }
-func (m *mockRuntime) RegisterSharedResource(name string, resource any) error { return nil }
-func (m *mockRuntime) RemoveListener(listener plugins.EventListener) {}
+func (m *mockRuntime) GetCurrentPluginContext() string                                          { return "" }
+func (m *mockRuntime) GetEventHistory(filter plugins.EventFilter) []plugins.PluginEvent         { return nil }
+func (m *mockRuntime) GetEventStats() map[string]any                                            { return nil }
+func (m *mockRuntime) GetLogger() log.Logger                                                    { return log.DefaultLogger }
+func (m *mockRuntime) GetPluginEventHistory(pluginName string, filter plugins.EventFilter) []plugins.PluginEvent {
+	return nil
+}
+func (m *mockRuntime) GetResourceStats() map[string]any                                       { return nil }
+func (m *mockRuntime) GetSharedResource(name string) (any, error)                             { return nil, nil }
+func (m *mockRuntime) GetPrivateResource(name string) (any, error)                            { return nil, nil }
+func (m *mockRuntime) GetResource(name string) (any, error)                                   { return nil, nil }
+func (m *mockRuntime) GetResourceInfo(name string) (*plugins.ResourceInfo, error)             { return nil, nil }
+func (m *mockRuntime) ListResources() []*plugins.ResourceInfo                                 { return nil }
+func (m *mockRuntime) RegisterPrivateResource(name string, resource any) error                { return nil }
+func (m *mockRuntime) RegisterResource(name string, resource any) error                       { return nil }
+func (m *mockRuntime) RegisterSharedResource(name string, resource any) error                 { return nil }
+func (m *mockRuntime) RemoveListener(listener plugins.EventListener)                          {}
 func (m *mockRuntime) RemovePluginListener(pluginName string, listener plugins.EventListener) {}
-func (m *mockRuntime) SetConfig(conf config.Config) {}
-func (m *mockRuntime) SetEventDispatchMode(mode string) error { return nil }
-func (m *mockRuntime) SetEventTimeout(timeout time.Duration) {}
-func (m *mockRuntime) SetEventWorkerPoolSize(size int) {}
-func (m *mockRuntime) UnregisterPrivateResource(name string) error { return nil }
-func (m *mockRuntime) UnregisterResource(name string) error { return nil }
-func (m *mockRuntime) UnregisterSharedResource(name string) error { return nil }
-func (m *mockRuntime) WithPluginContext(pluginName string) plugins.Runtime { return m }
-func (m *mockRuntime) GetTypedResource(name string, resourceType string) (any, error) { return nil, nil }
-func (m *mockRuntime) RegisterTypedResource(name string, resource any, resourceType string) error { return nil }
+func (m *mockRuntime) SetConfig(conf config.Config)                                           {}
+func (m *mockRuntime) SetEventDispatchMode(mode string) error                                 { return nil }
+func (m *mockRuntime) SetEventTimeout(timeout time.Duration)                                  {}
+func (m *mockRuntime) SetEventWorkerPoolSize(size int)                                        {}
+func (m *mockRuntime) UnregisterPrivateResource(name string) error                            { return nil }
+func (m *mockRuntime) UnregisterResource(name string) error                                   { return nil }
+func (m *mockRuntime) UnregisterSharedResource(name string) error                             { return nil }
+func (m *mockRuntime) WithPluginContext(pluginName string) plugins.Runtime                    { return m }
+func (m *mockRuntime) GetTypedResource(name string, resourceType string) (any, error) {
+	return nil, nil
+}
+func (m *mockRuntime) RegisterTypedResource(name string, resource any, resourceType string) error {
+	return nil
+}
 
 type mockConfig struct {
 	values map[string]interface{}
@@ -62,9 +68,9 @@ func (m *mockConfig) Value(key string) config.Value {
 	return &mockValue{key: key, values: m.values}
 }
 
-func (m *mockConfig) Load() error { return nil }
+func (m *mockConfig) Load() error                               { return nil }
 func (m *mockConfig) Watch(key string, o config.Observer) error { return nil }
-func (m *mockConfig) Close() error { return nil }
+func (m *mockConfig) Close() error                              { return nil }
 
 type mockValue struct {
 	key    string
@@ -83,16 +89,16 @@ func (m *mockValue) Scan(dest interface{}) error {
 	return errors.New("config not found")
 }
 
-func (m *mockValue) Bool() (bool, error) { return false, nil }
-func (m *mockValue) Int() (int64, error) { return 0, nil }
-func (m *mockValue) Float() (float64, error) { return 0, nil }
-func (m *mockValue) String() (string, error) { return "", nil }
+func (m *mockValue) Bool() (bool, error)              { return false, nil }
+func (m *mockValue) Int() (int64, error)              { return 0, nil }
+func (m *mockValue) Float() (float64, error)          { return 0, nil }
+func (m *mockValue) String() (string, error)          { return "", nil }
 func (m *mockValue) Duration() (time.Duration, error) { return 0, nil }
 
 func TestNewBaseSQLPlugin(t *testing.T) {
 	config := &interfaces.Config{
-		Driver:      "sqlite3",
-		DSN:         ":memory:",
+		Driver:       "sqlite3",
+		DSN:          ":memory:",
 		MaxOpenConns: 10,
 		MaxIdleConns: 5,
 	}
@@ -122,8 +128,8 @@ func TestNewBaseSQLPlugin(t *testing.T) {
 
 func TestSQLPlugin_InitializeResources(t *testing.T) {
 	config := &interfaces.Config{
-		Driver:      "sqlite3",
-		DSN:         ":memory:",
+		Driver:       "sqlite3",
+		DSN:          ":memory:",
 		MaxOpenConns: 10,
 		MaxIdleConns: 5,
 	}
@@ -247,14 +253,14 @@ func TestSQLPlugin_ValidateConfig(t *testing.T) {
 func TestSQLPlugin_StartupTasks(t *testing.T) {
 	// Skip test that requires actual database connection
 	t.Skip("Skipping test that requires database connection")
-	
+
 	// Use SQLite in-memory database for testing
 	config := &interfaces.Config{
-		Driver:              "sqlite3",
-		DSN:                 ":memory:",
-		MaxOpenConns:       10,
-		MaxIdleConns:       5,
-		HealthCheckInterval: 0, // Disable health check for faster tests
+		Driver:                "sqlite3",
+		DSN:                   ":memory:",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0, // Disable health check for faster tests
 		AutoReconnectInterval: 0, // Disable auto-reconnect for tests
 	}
 
@@ -294,13 +300,13 @@ func TestSQLPlugin_StartupTasks(t *testing.T) {
 
 func TestSQLPlugin_GetDB(t *testing.T) {
 	t.Skip("Skipping test that requires database connection")
-	
+
 	config := &interfaces.Config{
-		Driver:              "sqlite3",
-		DSN:                 ":memory:",
-		MaxOpenConns:       10,
-		MaxIdleConns:       5,
-		HealthCheckInterval: 0,
+		Driver:                "sqlite3",
+		DSN:                   ":memory:",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -369,13 +375,13 @@ func TestSQLPlugin_GetDB(t *testing.T) {
 
 func TestSQLPlugin_CheckHealth(t *testing.T) {
 	t.Skip("Skipping test that requires database connection")
-	
+
 	config := &interfaces.Config{
-		Driver:              "sqlite3",
-		DSN:                 ":memory:",
-		MaxOpenConns:       10,
-		MaxIdleConns:       5,
-		HealthCheckInterval: 0,
+		Driver:                "sqlite3",
+		DSN:                   ":memory:",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -423,13 +429,13 @@ func TestSQLPlugin_CheckHealth(t *testing.T) {
 
 func TestSQLPlugin_IsConnected(t *testing.T) {
 	t.Skip("Skipping test that requires database connection")
-	
+
 	config := &interfaces.Config{
-		Driver:              "sqlite3",
-		DSN:                 ":memory:",
-		MaxOpenConns:       10,
-		MaxIdleConns:       5,
-		HealthCheckInterval: 0,
+		Driver:                "sqlite3",
+		DSN:                   ":memory:",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -480,13 +486,13 @@ func TestSQLPlugin_IsConnected(t *testing.T) {
 
 func TestSQLPlugin_GetStats(t *testing.T) {
 	t.Skip("Skipping test that requires database connection")
-	
+
 	config := &interfaces.Config{
-		Driver:              "sqlite3",
-		DSN:                 ":memory:",
-		MaxOpenConns:       10,
-		MaxIdleConns:       5,
-		HealthCheckInterval: 0,
+		Driver:                "sqlite3",
+		DSN:                   ":memory:",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -534,13 +540,13 @@ func TestSQLPlugin_GetStats(t *testing.T) {
 
 func TestSQLPlugin_Reconnect(t *testing.T) {
 	t.Skip("Skipping test that requires database connection")
-	
+
 	config := &interfaces.Config{
-		Driver:              "sqlite3",
-		DSN:                 ":memory:",
-		MaxOpenConns:       10,
-		MaxIdleConns:       5,
-		HealthCheckInterval: 0,
+		Driver:                "sqlite3",
+		DSN:                   ":memory:",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -586,13 +592,13 @@ func TestSQLPlugin_Reconnect(t *testing.T) {
 
 func TestSQLPlugin_CleanupTasks(t *testing.T) {
 	t.Skip("Skipping test that requires database connection")
-	
+
 	config := &interfaces.Config{
-		Driver:              "sqlite3",
-		DSN:                 ":memory:",
-		MaxOpenConns:       10,
-		MaxIdleConns:       5,
-		HealthCheckInterval: 0,
+		Driver:                "sqlite3",
+		DSN:                   ":memory:",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -657,11 +663,11 @@ func TestSQLPlugin_GetDialect(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := &interfaces.Config{
-				Driver:              tt.driver,
-				DSN:                 "test://dsn",
-				MaxOpenConns:       10,
-				MaxIdleConns:       5,
-				HealthCheckInterval: 0,
+				Driver:                tt.driver,
+				DSN:                   "test://dsn",
+				MaxOpenConns:          10,
+				MaxIdleConns:          5,
+				HealthCheckInterval:   0,
 				AutoReconnectInterval: 0,
 			}
 
@@ -697,17 +703,17 @@ func TestSQLPlugin_GetDialect(t *testing.T) {
 
 func TestSQLPlugin_ConnectionRetry(t *testing.T) {
 	t.Skip("Skipping test that requires database connection")
-	
+
 	// Test with invalid DSN to trigger retry logic
 	config := &interfaces.Config{
-		Driver:          "sqlite3",
-		DSN:             "invalid://dsn",
-		MaxOpenConns:    10,
-		MaxIdleConns:    5,
-		RetryEnabled:    true,
-		RetryMaxAttempts: 2,
-		RetryInitialDelay: 1,
-		HealthCheckInterval: 0,
+		Driver:                "sqlite3",
+		DSN:                   "invalid://dsn",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		RetryEnabled:          true,
+		RetryMaxAttempts:      2,
+		RetryInitialDelay:     1,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -741,13 +747,13 @@ func TestSQLPlugin_ConnectionRetry(t *testing.T) {
 
 func TestSQLPlugin_ConcurrentAccess(t *testing.T) {
 	t.Skip("Skipping test that requires database connection")
-	
+
 	config := &interfaces.Config{
-		Driver:              "sqlite3",
-		DSN:                 ":memory:",
-		MaxOpenConns:       10,
-		MaxIdleConns:       5,
-		HealthCheckInterval: 0,
+		Driver:                "sqlite3",
+		DSN:                   ":memory:",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -803,13 +809,13 @@ func TestSQLPlugin_ConcurrentAccess(t *testing.T) {
 
 func TestSQLPlugin_QueryExecution(t *testing.T) {
 	t.Skip("Skipping test that requires database connection")
-	
+
 	config := &interfaces.Config{
-		Driver:              "sqlite3",
-		DSN:                 ":memory:",
-		MaxOpenConns:       10,
-		MaxIdleConns:       5,
-		HealthCheckInterval: 0,
+		Driver:                "sqlite3",
+		DSN:                   ":memory:",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -870,4 +876,3 @@ func TestSQLPlugin_QueryExecution(t *testing.T) {
 	// Cleanup
 	_ = plugin.CleanupTasks()
 }
-

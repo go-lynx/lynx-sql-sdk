@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx/plugins"
-	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 )
 
 var (
@@ -267,8 +267,8 @@ func (p *SQLPlugin) StartupTasks() error {
 	if p.config.MonitorEnabled {
 		thresholds := &PoolThresholds{
 			UsagePercentage: p.config.AlertThresholdUsage,
-			WaitDuration:     time.Duration(p.config.AlertThresholdWait) * time.Second,
-			WaitCount:        p.config.AlertThresholdWaitCount,
+			WaitDuration:    time.Duration(p.config.AlertThresholdWait) * time.Second,
+			WaitCount:       p.config.AlertThresholdWaitCount,
 		}
 		p.poolMonitor = NewPoolMonitor(
 			p,
@@ -288,7 +288,7 @@ func (p *SQLPlugin) StartupTasks() error {
 		// Since bool zero value is false, we enable by default (production best practice)
 		// User must explicitly set auto_reconnect_enabled: false to disable
 		shouldEnable := p.config.AutoReconnectInterval > 0 && !(p.config.AutoReconnectEnabled == false)
-		
+
 		if shouldEnable {
 			p.autoReconnect = NewAutoReconnector(
 				p,
@@ -377,10 +377,10 @@ func (p *SQLPlugin) connect() (*sql.DB, error) {
 	if !p.config.RetryEnabled {
 		p.metricsRecorder.IncConnectSuccess()
 	}
-	
+
 	// Update last ping time on successful connection
 	p.lastPingTime.Store(time.Now().Unix())
-	
+
 	return db, nil
 }
 
@@ -571,10 +571,10 @@ func (p *SQLPlugin) CheckHealth() error {
 	}
 
 	p.metricsRecorder.RecordHealthCheck(true)
-	
+
 	// Update last ping time on successful health check
 	p.lastPingTime.Store(time.Now().Unix())
-	
+
 	return nil
 }
 
