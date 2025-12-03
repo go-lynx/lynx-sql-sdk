@@ -1,14 +1,12 @@
-module github.com/go-lynx/lynx/plugins/sql/base
+module github.com/go-lynx/lynx-sql-sdk
 
 go 1.25
 
 toolchain go1.25.3
 
-replace github.com/go-lynx/lynx/plugins/sql/interfaces => ../interfaces
 
 require (
 	github.com/go-lynx/lynx v1.2.3
-	github.com/go-lynx/lynx/plugins/sql/interfaces v1.2.3
 	github.com/prometheus/client_golang v1.23.0
 )
 
@@ -42,3 +40,9 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/go-lynx/lynx => ../lynx
+
+replace github.com/go-lynx/lynx-mysql => ../lynx-mysql
+
+replace github.com/go-lynx/lynx-pgsql => ../lynx-pgsql

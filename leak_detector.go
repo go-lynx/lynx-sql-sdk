@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-lynx/lynx/app/log"
+	"github.com/go-lynx/lynx/log"
 )
 
 // LeakDetector detects connection leaks by monitoring connection usage

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/go-lynx/lynx/plugins/sql/base"
-	"github.com/go-lynx/lynx/plugins/sql/interfaces"
+	"github.com/go-lynx/lynx-sql-sdk/base"
+	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/plugins"
 )
 

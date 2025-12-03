@@ -10,7 +10,7 @@ import (
 	"github.com/go-kratos/kratos/v2/config"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-lynx/lynx/plugins"
-	"github.com/go-lynx/lynx/plugins/sql/interfaces"
+	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 )
 
 // mockRuntime is a mock implementation of plugins.Runtime for testing

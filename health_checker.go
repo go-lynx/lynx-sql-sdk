@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-lynx/lynx/app/log"
+	"github.com/go-lynx/lynx/log"
 )
 
 // HealthCheckable interface for health checkable components

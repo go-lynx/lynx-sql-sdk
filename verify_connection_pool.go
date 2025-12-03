@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/go-lynx/lynx/plugins/sql/base"
-	"github.com/go-lynx/lynx/plugins/sql/interfaces"
-	"github.com/go-lynx/lynx/plugins/sql/mysql"
-	"github.com/go-lynx/lynx/plugins/sql/pgsql"
+	"github.com/go-lynx/lynx-sql-sdk/base"
+	"github.com/go-lynx/lynx-sql-sdk/interfaces"
+	"github.com/go-lynx/lynx-mysql"
+	"github.com/go-lynx/lynx-pgsql"
 )
 
 func main() {

@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/go-lynx/lynx/app/log"
+	"github.com/go-lynx/lynx/log"
 )
 
 // QueryMonitor provides slow query monitoring and logging

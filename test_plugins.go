@@ -12,12 +12,12 @@ import (
 
 	"github.com/go-kratos/kratos/v2/config"
 	"github.com/go-kratos/kratos/v2/log"
-	"github.com/go-lynx/lynx/app"
+	"github.com/go-lynx/lynx"
 	"github.com/go-lynx/lynx/plugins"
-	"github.com/go-lynx/lynx/plugins/sql/interfaces"
-	"github.com/go-lynx/lynx/plugins/sql/mysql"
-	"github.com/go-lynx/lynx/plugins/sql/pgsql"
-	"github.com/go-lynx/lynx/plugins/sql/pgsql/conf"
+	"github.com/go-lynx/lynx-sql-sdk/interfaces"
+	"github.com/go-lynx/lynx-mysql"
+	"github.com/go-lynx/lynx-pgsql"
+	"github.com/go-lynx/lynx-pgsql/conf"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -217,7 +217,7 @@ func createMySQLRuntime() plugins.Runtime {
 		},
 	}
 
-	rt := app.NewTypedRuntimePlugin()
+	rt := lynx.NewTypedRuntimePlugin()
 	rt.SetConfig(mockConfig)
 	return rt
 }
@@ -234,7 +234,7 @@ func createPostgreSQLRuntime() plugins.Runtime {
 		},
 	}
 
-	rt := app.NewTypedRuntimePlugin()
+	rt := lynx.NewTypedRuntimePlugin()
 	rt.SetConfig(mockConfig)
 	return rt
 }
