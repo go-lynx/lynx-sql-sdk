@@ -1,11 +1,14 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
 	"fmt"
 	"os"
 
-	"github.com/go-lynx/lynx-mysql"
-	"github.com/go-lynx/lynx-pgsql"
+	mysql "github.com/go-lynx/lynx-mysql"
+	pgsql "github.com/go-lynx/lynx-pgsql"
 	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 )
 
