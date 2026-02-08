@@ -335,9 +335,14 @@ func (p *SQLPlugin) connect() (*sql.DB, error) {
 		p.metricsRecorder.IncConnectAttempt()
 	}
 
-	// Open database connection
-	// Note: sql.Open() does not immediately create connections, it just validates the DSN
-	db, err := sql.Open(p.config.Driver, p.config.DSN)
+	// Open database connection (use optional OpenDBFunc when set, e.g. for tracing)
+	var db *sql.DB
+	var err error
+	if p.config.OpenDBFunc != nil {
+		db, err = p.config.OpenDBFunc(p.config.Driver, p.config.DSN)
+	} else {
+		db, err = sql.Open(p.config.Driver, p.config.DSN)
+	}
 	if err != nil {
 		if !p.config.RetryEnabled {
 			p.metricsRecorder.IncConnectFailure()

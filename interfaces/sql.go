@@ -46,33 +46,38 @@ type Config struct {
 	HealthCheckQuery    string `json:"health_check_query"`    // custom query for health check
 
 	// Connection retry settings
-	RetryEnabled      bool `json:"retry_enabled"`       // enable connection retry on startup failure
-	RetryMaxAttempts  int  `json:"retry_max_attempts"`  // maximum retry attempts (default: 3)
-	RetryInitialDelay int  `json:"retry_initial_delay"` // initial retry delay in seconds (default: 1)
-	RetryMaxDelay      int  `json:"retry_max_delay"`    // maximum retry delay in seconds (default: 30)
-	RetryMultiplier    float64 `json:"retry_multiplier"` // exponential backoff multiplier (default: 2.0)
+	RetryEnabled      bool    `json:"retry_enabled"`       // enable connection retry on startup failure
+	RetryMaxAttempts  int     `json:"retry_max_attempts"`  // maximum retry attempts (default: 3)
+	RetryInitialDelay int     `json:"retry_initial_delay"` // initial retry delay in seconds (default: 1)
+	RetryMaxDelay     int     `json:"retry_max_delay"`     // maximum retry delay in seconds (default: 30)
+	RetryMultiplier   float64 `json:"retry_multiplier"`    // exponential backoff multiplier (default: 2.0)
 
 	// Connection pool monitoring and alerting
-	MonitorEnabled        bool    `json:"monitor_enabled"`         // enable connection pool monitoring
-	MonitorInterval       int     `json:"monitor_interval"`        // monitoring interval in seconds (default: 30)
-	AlertThresholdUsage   float64 `json:"alert_threshold_usage"`  // alert when pool usage exceeds this percentage (default: 0.8 = 80%)
-	AlertThresholdWait    int     `json:"alert_threshold_wait"`    // alert when wait duration exceeds this in seconds (default: 5)
-	AlertThresholdWaitCount int64 `json:"alert_threshold_wait_count"` // alert when wait count exceeds this (default: 10)
+	MonitorEnabled          bool    `json:"monitor_enabled"`            // enable connection pool monitoring
+	MonitorInterval         int     `json:"monitor_interval"`           // monitoring interval in seconds (default: 30)
+	AlertThresholdUsage     float64 `json:"alert_threshold_usage"`      // alert when pool usage exceeds this percentage (default: 0.8 = 80%)
+	AlertThresholdWait      int     `json:"alert_threshold_wait"`       // alert when wait duration exceeds this in seconds (default: 5)
+	AlertThresholdWaitCount int64   `json:"alert_threshold_wait_count"` // alert when wait count exceeds this (default: 10)
 
 	// Runtime auto-reconnect settings
-	AutoReconnectEnabled  bool `json:"auto_reconnect_enabled"`   // enable automatic reconnection on connection loss (default: true for production)
-	AutoReconnectInterval int  `json:"auto_reconnect_interval"`   // interval between reconnect attempts in seconds (default: 5)
-	AutoReconnectMaxAttempts int `json:"auto_reconnect_max_attempts"` // maximum reconnect attempts, 0 for unlimited (default: 0 = unlimited)
+	AutoReconnectEnabled     bool `json:"auto_reconnect_enabled"`      // enable automatic reconnection on connection loss (default: true for production)
+	AutoReconnectInterval    int  `json:"auto_reconnect_interval"`     // interval between reconnect attempts in seconds (default: 5)
+	AutoReconnectMaxAttempts int  `json:"auto_reconnect_max_attempts"` // maximum reconnect attempts, 0 for unlimited (default: 0 = unlimited)
 
 	// Connection pool warmup
 	WarmupEnabled bool `json:"warmup_enabled"` // enable connection pool warmup on startup (default: false)
-	WarmupConns   int  `json:"warmup_conns"`    // number of connections to warmup (default: min_idle_conns)
+	WarmupConns   int  `json:"warmup_conns"`   // number of connections to warmup (default: min_idle_conns)
 
 	// Slow query monitoring
-	SlowQueryEnabled  bool `json:"slow_query_enabled"`  // enable slow query monitoring (default: false)
-	SlowQueryThreshold int `json:"slow_query_threshold"` // slow query threshold in milliseconds (default: 1000)
+	SlowQueryEnabled   bool `json:"slow_query_enabled"`   // enable slow query monitoring (default: false)
+	SlowQueryThreshold int  `json:"slow_query_threshold"` // slow query threshold in milliseconds (default: 1000)
 
 	// Connection leak detection
-	LeakDetectionEnabled bool `json:"leak_detection_enabled"` // enable connection leak detection (default: false)
-	LeakDetectionThreshold int `json:"leak_detection_threshold"` // connection leak threshold in seconds (default: 300)
+	LeakDetectionEnabled   bool `json:"leak_detection_enabled"`   // enable connection leak detection (default: false)
+	LeakDetectionThreshold int  `json:"leak_detection_threshold"` // connection leak threshold in seconds (default: 300)
+
+	// OpenDBFunc is optional. When set, it is used instead of sql.Open(driver, dsn) to open the DB.
+	// Plugins can use this to inject tracing (e.g. otelsql) when a tracer plugin is present.
+	// Signature: same as sql.Open(driverName, dataSourceName) -> (*sql.DB, error).
+	OpenDBFunc func(driver string, dsn string) (*sql.DB, error) `json:"-"`
 }
