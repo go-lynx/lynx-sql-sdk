@@ -276,6 +276,8 @@ func (m *mockValue) Float() (float64, error) { return 0, nil }
 func (m *mockValue) Duration() (time.Duration, error) {
 	return 0, nil
 }
+func (m *mockValue) Slice() ([]config.Value, error)        { return nil, nil }
+func (m *mockValue) Map() (map[string]config.Value, error) { return nil, nil }
 func (m *mockValue) Load() any {
 	if val, ok := m.values[m.key]; ok {
 		return val
