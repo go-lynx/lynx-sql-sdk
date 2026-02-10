@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/go-kratos/kratos/v2/config"
 	"github.com/go-kratos/kratos/v2/log"
@@ -199,6 +200,8 @@ func (m *mockRuntime) GetConfig() config.Config {
 	return &mockConfig{values: m.config}
 }
 
+func (m *mockConfig) Scan(dest interface{}) error { return nil }
+
 func (m *mockRuntime) AddListener(listener plugins.EventListener, filter *plugins.EventFilter) {}
 func (m *mockRuntime) AddPluginListener(pluginName string, listener plugins.EventListener, filter *plugins.EventFilter) {
 }
@@ -227,12 +230,13 @@ func (m *mockRuntime) RemoveListener(listener plugins.EventListener)            
 func (m *mockRuntime) RemovePluginListener(pluginName string, listener plugins.EventListener) {}
 func (m *mockRuntime) SetConfig(conf config.Config)                                           {}
 func (m *mockRuntime) SetEventDispatchMode(mode string) error                                 { return nil }
-func (m *mockRuntime) SetEventTimeout(timeout interface{})                                    {}
+func (m *mockRuntime) SetEventTimeout(timeout time.Duration)                                  {}
 func (m *mockRuntime) SetEventWorkerPoolSize(size int)                                        {}
 func (m *mockRuntime) UnregisterPrivateResource(name string) error                            { return nil }
 func (m *mockRuntime) UnregisterResource(name string) error                                   { return nil }
 func (m *mockRuntime) UnregisterSharedResource(name string) error                             { return nil }
 func (m *mockRuntime) WithPluginContext(pluginName string) plugins.Runtime                    { return m }
+func (m *mockRuntime) Shutdown()                                                              {}
 func (m *mockRuntime) GetTypedResource(name string, resourceType string) (any, error) {
 	return nil, nil
 }
@@ -269,10 +273,16 @@ func (m *mockValue) String() (string, error) { return "", nil }
 func (m *mockValue) Bool() (bool, error)     { return false, nil }
 func (m *mockValue) Int() (int64, error)     { return 0, nil }
 func (m *mockValue) Float() (float64, error) { return 0, nil }
-func (m *mockValue) Duration() (interface{}, error) {
-	var d interface{}
-	return d, nil
+func (m *mockValue) Duration() (time.Duration, error) {
+	return 0, nil
 }
+func (m *mockValue) Load() any {
+	if val, ok := m.values[m.key]; ok {
+		return val
+	}
+	return nil
+}
+func (m *mockValue) Store(any) {}
 
 func (m *mockConfig) Load() error                               { return nil }
 func (m *mockConfig) Watch(key string, o config.Observer) error { return nil }
