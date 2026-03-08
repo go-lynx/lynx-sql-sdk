@@ -361,14 +361,12 @@ func (p *SQLPlugin) connect() (*sql.DB, error) {
 		db.SetConnMaxIdleTime(time.Duration(p.config.ConnMaxIdleTime) * time.Second)
 	}
 
-	// Test connection with timeout
+	// Test connection with timeout (ping + execute SQL to ensure full path works)
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
 	if err := db.PingContext(ctx); err != nil {
 		// Ensure we close the db on ping failure to prevent resource leaks
-		// Even though sql.Open() doesn't create connections immediately,
-		// closing ensures any resources are properly released
 		closeErr := db.Close()
 		if closeErr != nil {
 			log.Warnf("Error closing database connection after ping failure: %v", closeErr)
@@ -377,6 +375,23 @@ func (p *SQLPlugin) connect() (*sql.DB, error) {
 			p.metricsRecorder.IncConnectFailure()
 		}
 		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+
+	// Verify SQL execution works (catches permission issues, proxies that block queries, etc.)
+	verifyQuery := "SELECT 1"
+	if p.config.HealthCheckQuery != "" {
+		verifyQuery = p.config.HealthCheckQuery
+	}
+	var result int
+	if err := db.QueryRowContext(ctx, verifyQuery).Scan(&result); err != nil {
+		closeErr := db.Close()
+		if closeErr != nil {
+			log.Warnf("Error closing database connection after SQL verification failure: %v", closeErr)
+		}
+		if !p.config.RetryEnabled {
+			p.metricsRecorder.IncConnectFailure()
+		}
+		return nil, fmt.Errorf("failed to verify SQL execution (%s): %w", verifyQuery, err)
 	}
 
 	if !p.config.RetryEnabled {
