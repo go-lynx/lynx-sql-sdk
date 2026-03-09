@@ -26,25 +26,26 @@ type HealthChecker struct {
 	interval    time.Duration
 	customQuery string
 
-	mu            sync.Mutex
-	lastCheck     time.Time
-	isHealthy     bool
-	failureCount  int64 // Count of consecutive failures
-	maxFailures   int64 // Max failures before attempting recovery
+	mu           sync.Mutex
+	lastCheck    time.Time
+	isHealthy    bool
+	failureCount int64 // Count of consecutive failures
+	maxFailures  int64 // Max failures before attempting recovery
 
 	stopChan chan struct{}
 	stopOnce sync.Once // Protect against multiple close operations
 	stopped  bool
 }
 
-// NewHealthChecker creates a new health checker
+// NewHealthChecker creates a new health checker.
+// Recovery (Reconnect) is attempted on first failure so the pool is replaced as soon as it is unhealthy.
 func NewHealthChecker(target HealthCheckable, interval time.Duration, customQuery string) *HealthChecker {
 	return &HealthChecker{
 		target:      target,
 		interval:    interval,
 		customQuery: customQuery,
 		isHealthy:   true,
-		maxFailures: 3, // Attempt recovery after 3 consecutive failures
+		maxFailures: 1, // Reconnect on first failure so pool never hands out dead connections for long
 		stopChan:    make(chan struct{}),
 	}
 }
@@ -105,7 +106,7 @@ func (h *HealthChecker) performHealthCheck(ctx context.Context) {
 
 	if err != nil {
 		h.failureCount++
-		
+
 		// Only log on state transition from healthy to unhealthy to avoid log spam
 		if h.isHealthy {
 			log.Errorf("Health check failed for %s: %v", h.target.Name(), err)
@@ -116,14 +117,14 @@ func (h *HealthChecker) performHealthCheck(ctx context.Context) {
 		if h.failureCount >= h.maxFailures {
 			// Try to recover by reconnecting
 			if recoverable, ok := h.target.(Recoverable); ok {
-				log.Infof("Attempting automatic recovery for %s after %d consecutive failures", 
+				log.Infof("Attempting automatic recovery for %s after %d consecutive failures",
 					h.target.Name(), h.failureCount)
-				
+
 				// Release lock before reconnecting to avoid deadlock
 				h.mu.Unlock()
 				reconnectErr := recoverable.Reconnect()
 				h.mu.Lock()
-				
+
 				if reconnectErr == nil {
 					log.Infof("Automatic recovery successful for %s", h.target.Name())
 					h.failureCount = 0
@@ -136,7 +137,7 @@ func (h *HealthChecker) performHealthCheck(ctx context.Context) {
 	} else {
 		// Reset failure count on success
 		h.failureCount = 0
-		
+
 		// Only log on state transition from unhealthy to healthy to avoid log spam
 		if !h.isHealthy {
 			log.Infof("Health check recovered for %s", h.target.Name())

@@ -20,6 +20,11 @@ type SQLPlugin interface {
 	// This allows for timeout and cancellation control
 	GetDBWithContext(ctx context.Context) (*sql.DB, error)
 
+	// GetValidatedConn returns a single connection from the pool that has been verified alive (Ping).
+	// The returned connection is guaranteed to be usable at handoff time. Caller must call conn.Close()
+	// when done to return the connection to the pool.
+	GetValidatedConn(ctx context.Context) (*sql.Conn, error)
+
 	// GetDialect returns the database dialect (mysql, postgres, mssql, etc.)
 	GetDialect() string
 
@@ -44,6 +49,9 @@ type Config struct {
 	// Health check settings (optional)
 	HealthCheckInterval int    `json:"health_check_interval"` // in seconds, 0 to disable
 	HealthCheckQuery    string `json:"health_check_query"`    // custom query for health check
+	// EnsureAliveBeforeHandout: when true (default when nil), GetDB/GetDBWithContext pings the pool before returning;
+	// on ping failure triggers Reconnect() once so the pool is not handed out when already broken.
+	EnsureAliveBeforeHandout *bool `json:"ensure_alive_before_handout"`
 
 	// Connection retry settings
 	RetryEnabled      bool    `json:"retry_enabled"`       // enable connection retry on startup failure

@@ -508,7 +508,9 @@ func (p *SQLPlugin) GetDB() (*sql.DB, error) {
 	return p.GetDBWithContext(context.Background())
 }
 
-// GetDBWithContext returns the database connection with context support
+// GetDBWithContext returns the database connection with context support.
+// When EnsureAliveBeforeHandout is true (default), it pings the pool before returning; on failure
+// it triggers Reconnect() once so the pool is not handed out when already broken.
 func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 	if !p.IsConnected() {
 		return nil, ErrNotConnected
@@ -522,8 +524,67 @@ func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 	}
 
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.db, nil
+	db := p.db
+	p.mu.RUnlock()
+
+	// Ensure pool is alive before handing out: ping and reconnect once on failure
+	ensureAlive := p.config.EnsureAliveBeforeHandout == nil || *p.config.EnsureAliveBeforeHandout
+	if ensureAlive && db != nil && !p.closing.Load() {
+		pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
+		err := db.PingContext(pingCtx)
+		pingCancel()
+		if err != nil {
+			// Pool is broken or has no healthy connection; replace pool so we never hand out a closed db
+			if reconnectErr := p.Reconnect(); reconnectErr != nil {
+				return nil, fmt.Errorf("pool unhealthy and reconnect failed: %w", err)
+			}
+			p.mu.RLock()
+			db = p.db
+			p.mu.RUnlock()
+		}
+	}
+
+	return db, nil
+}
+
+// GetValidatedConn returns a single connection from the pool that has been verified alive (Ping).
+// The returned connection is guaranteed to be usable at handoff time. Caller must call conn.Close()
+// when done to return the connection to the pool.
+func (p *SQLPlugin) GetValidatedConn(ctx context.Context) (*sql.Conn, error) {
+	db, err := p.GetDBWithContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
+	err = conn.PingContext(pingCtx)
+	pingCancel()
+	if err != nil {
+		_ = conn.Close()
+		// One bad connection; try reconnect and one more time
+		if reconnectErr := p.Reconnect(); reconnectErr != nil {
+			return nil, fmt.Errorf("connection validation failed and reconnect failed: %w", err)
+		}
+		db, err = p.GetDBWithContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		conn, err = db.Conn(ctx)
+		if err != nil {
+			return nil, err
+		}
+		pingCtx2, pingCancel2 := context.WithTimeout(ctx, 2*time.Second)
+		err = conn.PingContext(pingCtx2)
+		pingCancel2()
+		if err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("connection validation failed after reconnect: %w", err)
+		}
+	}
+	return conn, nil
 }
 
 // GetDialect returns the database dialect
@@ -562,11 +623,24 @@ func (p *SQLPlugin) GetAutoReconnector() *AutoReconnector {
 	return p.autoReconnect
 }
 
-// CheckHealth performs a health check
+// CheckHealth performs a health check. It ensures the database is reachable:
+// if the current connection state is bad or the health query fails (e.g. one
+// stale connection from the pool), it tries Reconnect() once and retries before
+// reporting unhealthy, so a single bad connection does not cause the app to be
+// marked down or stop serving.
 func (p *SQLPlugin) CheckHealth() error {
+	query := "SELECT 1"
+	if p.config.HealthCheckQuery != "" {
+		query = p.config.HealthCheckQuery
+	}
+
+	// If not connected (e.g. previous Ping marked disconnected due to one bad connection),
+	// try to reconnect once before reporting unhealthy.
 	if !p.IsConnected() {
-		p.metricsRecorder.RecordHealthCheck(false)
-		return ErrNotConnected
+		if err := p.Reconnect(); err != nil {
+			p.metricsRecorder.RecordHealthCheck(false)
+			return ErrNotConnected
+		}
 	}
 
 	db, err := p.GetDB()
@@ -575,26 +649,32 @@ func (p *SQLPlugin) CheckHealth() error {
 		return err
 	}
 
-	// Use custom health check query if configured
-	query := "SELECT 1"
-	if p.config.HealthCheckQuery != "" {
-		query = p.config.HealthCheckQuery
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var result int
 	if err := db.QueryRowContext(ctx, query).Scan(&result); err != nil {
-		p.metricsRecorder.RecordHealthCheck(false)
-		return fmt.Errorf("health check failed: %w", err)
+		// Health query failed (e.g. stale connection). Try reconnect once and retry
+		// before reporting unhealthy, so one bad connection does not mark the DB down.
+		if reconnectErr := p.Reconnect(); reconnectErr != nil {
+			p.metricsRecorder.RecordHealthCheck(false)
+			return fmt.Errorf("health check failed: %w", err)
+		}
+		db, err = p.GetDB()
+		if err != nil {
+			p.metricsRecorder.RecordHealthCheck(false)
+			return err
+		}
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel2()
+		if err2 := db.QueryRowContext(ctx2, query).Scan(&result); err2 != nil {
+			p.metricsRecorder.RecordHealthCheck(false)
+			return fmt.Errorf("health check failed after reconnect: %w", err2)
+		}
 	}
 
 	p.metricsRecorder.RecordHealthCheck(true)
-
-	// Update last ping time on successful health check
 	p.lastPingTime.Store(time.Now().Unix())
-
 	return nil
 }
 
