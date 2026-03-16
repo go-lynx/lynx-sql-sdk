@@ -503,7 +503,11 @@ func (p *SQLPlugin) CleanupTasks() error {
 	return nil
 }
 
-// GetDB returns the database connection
+// GetDB returns the database connection.
+// Important: when auto-reconnect is enabled, do not cache the returned *sql.DB in long-lived structs
+// (e.g. global Data/Repo). After Reconnect(), the previous *sql.DB is closed; cached references will get
+// "sql: database is closed". Obtain the DB at the point of use (e.g. per request) or use a provider that
+// calls GetDBWithContext when needed.
 func (p *SQLPlugin) GetDB() (*sql.DB, error) {
 	return p.GetDBWithContext(context.Background())
 }
@@ -511,6 +515,7 @@ func (p *SQLPlugin) GetDB() (*sql.DB, error) {
 // GetDBWithContext returns the database connection with context support.
 // When EnsureAliveBeforeHandout is true (default), it pings the pool before returning; on failure
 // it triggers Reconnect() once so the pool is not handed out when already broken.
+// Do not cache the returned *sql.DB when auto-reconnect is enabled; after Reconnect() it becomes closed.
 func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 	if !p.IsConnected() {
 		return nil, ErrNotConnected
