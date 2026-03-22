@@ -49,6 +49,7 @@ func (m *mockRuntime) SetConfig(conf config.Config)                             
 func (m *mockRuntime) SetEventDispatchMode(mode string) error                                 { return nil }
 func (m *mockRuntime) SetEventTimeout(timeout time.Duration)                                  {}
 func (m *mockRuntime) SetEventWorkerPoolSize(size int)                                        {}
+func (m *mockRuntime) Shutdown()                                                              {}
 func (m *mockRuntime) UnregisterPrivateResource(name string) error                            { return nil }
 func (m *mockRuntime) UnregisterResource(name string) error                                   { return nil }
 func (m *mockRuntime) UnregisterSharedResource(name string) error                             { return nil }
@@ -68,6 +69,7 @@ func (m *mockConfig) Value(key string) config.Value {
 	return &mockValue{key: key, values: m.values}
 }
 
+func (m *mockConfig) Scan(dest any) error                       { return nil }
 func (m *mockConfig) Load() error                               { return nil }
 func (m *mockConfig) Watch(key string, o config.Observer) error { return nil }
 func (m *mockConfig) Close() error                              { return nil }
@@ -94,6 +96,12 @@ func (m *mockValue) Int() (int64, error)              { return 0, nil }
 func (m *mockValue) Float() (float64, error)          { return 0, nil }
 func (m *mockValue) String() (string, error)          { return "", nil }
 func (m *mockValue) Duration() (time.Duration, error) { return 0, nil }
+func (m *mockValue) Slice() ([]config.Value, error)   { return nil, nil }
+func (m *mockValue) Map() (map[string]config.Value, error) {
+	return nil, nil
+}
+func (m *mockValue) Load() any   { return nil }
+func (m *mockValue) Store(v any) {}
 
 func TestNewBaseSQLPlugin(t *testing.T) {
 	config := &interfaces.Config{
@@ -204,13 +212,13 @@ func TestSQLPlugin_ValidateConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "max_open_conns zero",
+			name: "max_open_conns zero uses default",
 			config: &interfaces.Config{
 				Driver:       "sqlite3",
 				DSN:          ":memory:",
 				MaxOpenConns: 0,
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "invalid alert_threshold_usage",
@@ -805,6 +813,82 @@ func TestSQLPlugin_ConcurrentAccess(t *testing.T) {
 
 	// Cleanup
 	_ = plugin.CleanupTasks()
+}
+
+func TestAutoReconnectEnabled(t *testing.T) {
+	trueValue := true
+	falseValue := false
+
+	tests := []struct {
+		name   string
+		config *interfaces.Config
+		want   bool
+	}{
+		{
+			name: "disabled when interval is zero",
+			config: &interfaces.Config{
+				AutoReconnectInterval: 0,
+			},
+			want: false,
+		},
+		{
+			name: "enabled by default when flag is nil",
+			config: &interfaces.Config{
+				AutoReconnectInterval: 5,
+			},
+			want: true,
+		},
+		{
+			name: "enabled when explicitly true",
+			config: &interfaces.Config{
+				AutoReconnectEnabled:  &trueValue,
+				AutoReconnectInterval: 5,
+			},
+			want: true,
+		},
+		{
+			name: "disabled when explicitly false",
+			config: &interfaces.Config{
+				AutoReconnectEnabled:  &falseValue,
+				AutoReconnectInterval: 5,
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := autoReconnectEnabled(tt.config); got != tt.want {
+				t.Fatalf("autoReconnectEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSQLPlugin_ShouldPingBeforeHandout(t *testing.T) {
+	plugin := NewBaseSQLPlugin(
+		"test-id",
+		"test-plugin",
+		"Test plugin",
+		"v1.0.0",
+		"test.prefix",
+		100,
+		&interfaces.Config{},
+	)
+
+	if !plugin.shouldPingBeforeHandout() {
+		t.Fatal("expected first handout to require ping")
+	}
+
+	plugin.lastPingTime.Store(time.Now().Unix())
+	if plugin.shouldPingBeforeHandout() {
+		t.Fatal("expected recent validation to skip ping")
+	}
+
+	plugin.lastPingTime.Store(time.Now().Add(-2 * connectionValidationCacheWindow).Unix())
+	if !plugin.shouldPingBeforeHandout() {
+		t.Fatal("expected stale validation to require ping")
+	}
 }
 
 func TestSQLPlugin_QueryExecution(t *testing.T) {

@@ -32,6 +32,20 @@ type SQLPlugin interface {
 	IsConnected() bool
 }
 
+// DBProvider is a stable database handle provider.
+// Unlike caching a concrete *sql.DB or ORM driver/client at startup, a DBProvider resolves
+// the current pool on each call so callers can survive pool replacement during reconnect.
+type DBProvider interface {
+	// DB returns the current database pool for the given context.
+	DB(ctx context.Context) (*sql.DB, error)
+
+	// ValidatedConn returns a single validated connection from the current pool.
+	ValidatedConn(ctx context.Context) (*sql.Conn, error)
+
+	// Dialect returns the current SQL dialect.
+	Dialect() string
+}
+
 // Config represents common database configuration
 type Config struct {
 	// Driver name (mysql, postgres, mssql, etc.)
@@ -68,9 +82,9 @@ type Config struct {
 	AlertThresholdWaitCount int64   `json:"alert_threshold_wait_count"` // alert when wait count exceeds this (default: 10)
 
 	// Runtime auto-reconnect settings
-	AutoReconnectEnabled     bool `json:"auto_reconnect_enabled"`      // enable automatic reconnection on connection loss (default: true for production)
-	AutoReconnectInterval    int  `json:"auto_reconnect_interval"`     // interval between reconnect attempts in seconds (default: 5)
-	AutoReconnectMaxAttempts int  `json:"auto_reconnect_max_attempts"` // maximum reconnect attempts, 0 for unlimited (default: 0 = unlimited)
+	AutoReconnectEnabled     *bool `json:"auto_reconnect_enabled"`      // enable automatic reconnection on connection loss (default: true when nil)
+	AutoReconnectInterval    int   `json:"auto_reconnect_interval"`     // interval between reconnect attempts in seconds (default: 5)
+	AutoReconnectMaxAttempts int   `json:"auto_reconnect_max_attempts"` // maximum reconnect attempts, 0 for unlimited (default: 0 = unlimited)
 
 	// Connection pool warmup
 	WarmupEnabled bool `json:"warmup_enabled"` // enable connection pool warmup on startup (default: false)

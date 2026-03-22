@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 	"testing"
+	"time"
 
+	"github.com/go-kratos/kratos/v2/config"
+	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-lynx/lynx-sql-sdk/base"
 	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/plugins"
@@ -40,7 +43,7 @@ func TestDefaultConnectionPoolConfig(t *testing.T) {
 		t.Errorf("MySQL默认MaxIdleConns应该是5，实际是%d", mysqlConfig.MaxIdleConns)
 	}
 
-	fmt.Printf("✅ MySQL默认配置验证通过: MaxOpenConns=%d, MaxIdleConns=%d\n", 
+	fmt.Printf("✅ MySQL默认配置验证通过: MaxOpenConns=%d, MaxIdleConns=%d\n",
 		mysqlConfig.MaxOpenConns, mysqlConfig.MaxIdleConns)
 
 	_ = plugin
@@ -58,7 +61,7 @@ func TestConnectionPoolValidation(t *testing.T) {
 		{"有效配置: 25/5", 25, 5, true},
 		{"有效配置: 50/10", 50, 10, true},
 		{"无效配置: MaxIdleConns > MaxOpenConns", 5, 10, false},
-		{"无效配置: MaxOpenConns = 0", 0, 5, false},
+		{"默认值应用: MaxOpenConns = 0", 0, 5, true},
 		{"无效配置: MaxIdleConns < 0", 25, -1, false},
 		{"边界值: MaxIdleConns = MaxOpenConns", 25, 25, true},
 	}
@@ -81,7 +84,7 @@ func TestConnectionPoolValidation(t *testing.T) {
 			config,
 		)
 
-		rt := &mockRuntime{
+		rt := &validateMockRuntime{
 			config: map[string]interface{}{
 				"test.prefix": config,
 			},
@@ -161,7 +164,7 @@ func TestDefaultValuesApplication(t *testing.T) {
 		config,
 	)
 
-	rt := &mockRuntime{
+	rt := &validateMockRuntime{
 		config: map[string]interface{}{
 			"test.prefix": config,
 		},
@@ -187,60 +190,80 @@ func TestDefaultValuesApplication(t *testing.T) {
 }
 
 // mockRuntime实现
-type mockRuntime struct {
+type validateMockRuntime struct {
 	config map[string]interface{}
 }
 
-func (m *mockRuntime) GetConfig() interface{} {
-	return &mockConfig{values: m.config}
+func (m *validateMockRuntime) GetConfig() config.Config {
+	return &validateMockConfig{values: m.config}
 }
 
-func (m *mockRuntime) AddListener(listener plugins.EventListener, filter *plugins.EventFilter) {}
-func (m *mockRuntime) AddPluginListener(pluginName string, listener plugins.EventListener, filter *plugins.EventFilter) {}
-func (m *mockRuntime) CleanupResources(pluginName string) error { return nil }
-func (m *mockRuntime) EmitEvent(event plugins.PluginEvent) {}
-func (m *mockRuntime) EmitPluginEvent(pluginName string, eventType string, data map[string]any) {}
-func (m *mockRuntime) GetCurrentPluginContext() string { return "" }
-func (m *mockRuntime) GetEventHistory(filter plugins.EventFilter) []plugins.PluginEvent { return nil }
-func (m *mockRuntime) GetEventStats() map[string]any { return nil }
-func (m *mockRuntime) GetLogger() interface{} { return nil }
-func (m *mockRuntime) GetPluginEventHistory(pluginName string, filter plugins.EventFilter) []plugins.PluginEvent { return nil }
-func (m *mockRuntime) GetResourceStats() map[string]any { return nil }
-func (m *mockRuntime) GetSharedResource(name string) (any, error) { return nil, nil }
-func (m *mockRuntime) GetPrivateResource(name string) (any, error) { return nil, nil }
-func (m *mockRuntime) GetResource(name string) (any, error) { return nil, nil }
-func (m *mockRuntime) GetResourceInfo(name string) (*plugins.ResourceInfo, error) { return nil, nil }
-func (m *mockRuntime) ListResources() []*plugins.ResourceInfo { return nil }
-func (m *mockRuntime) RegisterPrivateResource(name string, resource any) error { return nil }
-func (m *mockRuntime) RegisterResource(name string, resource any) error { return nil }
-func (m *mockRuntime) RegisterSharedResource(name string, resource any) error { return nil }
-func (m *mockRuntime) RemoveListener(listener plugins.EventListener) {}
-func (m *mockRuntime) RemovePluginListener(pluginName string, listener plugins.EventListener) {}
-func (m *mockRuntime) SetConfig(conf interface{}) {}
-func (m *mockRuntime) SetEventDispatchMode(mode string) error { return nil }
-func (m *mockRuntime) SetEventTimeout(timeout interface{}) {}
-func (m *mockRuntime) SetEventWorkerPoolSize(size int) {}
-func (m *mockRuntime) UnregisterPrivateResource(name string) error { return nil }
-func (m *mockRuntime) UnregisterResource(name string) error { return nil }
-func (m *mockRuntime) UnregisterSharedResource(name string) error { return nil }
-func (m *mockRuntime) WithPluginContext(pluginName string) plugins.Runtime { return m }
-func (m *mockRuntime) GetTypedResource(name string, resourceType string) (any, error) { return nil, nil }
-func (m *mockRuntime) RegisterTypedResource(name string, resource any, resourceType string) error { return nil }
+func (m *validateMockRuntime) AddListener(listener plugins.EventListener, filter *plugins.EventFilter) {
+}
+func (m *validateMockRuntime) AddPluginListener(pluginName string, listener plugins.EventListener, filter *plugins.EventFilter) {
+}
+func (m *validateMockRuntime) CleanupResources(pluginName string) error { return nil }
+func (m *validateMockRuntime) EmitEvent(event plugins.PluginEvent)      {}
+func (m *validateMockRuntime) EmitPluginEvent(pluginName string, eventType string, data map[string]any) {
+}
+func (m *validateMockRuntime) GetCurrentPluginContext() string { return "" }
+func (m *validateMockRuntime) GetEventHistory(filter plugins.EventFilter) []plugins.PluginEvent {
+	return nil
+}
+func (m *validateMockRuntime) GetEventStats() map[string]any { return nil }
+func (m *validateMockRuntime) GetLogger() log.Logger         { return log.DefaultLogger }
+func (m *validateMockRuntime) GetPluginEventHistory(pluginName string, filter plugins.EventFilter) []plugins.PluginEvent {
+	return nil
+}
+func (m *validateMockRuntime) GetPrivateResource(name string) (any, error) { return nil, nil }
+func (m *validateMockRuntime) GetResource(name string) (any, error)        { return nil, nil }
+func (m *validateMockRuntime) GetResourceInfo(name string) (*plugins.ResourceInfo, error) {
+	return nil, nil
+}
+func (m *validateMockRuntime) GetResourceStats() map[string]any           { return nil }
+func (m *validateMockRuntime) GetSharedResource(name string) (any, error) { return nil, nil }
+func (m *validateMockRuntime) GetTypedResource(name string, resourceType string) (any, error) {
+	return nil, nil
+}
+func (m *validateMockRuntime) ListResources() []*plugins.ResourceInfo                  { return nil }
+func (m *validateMockRuntime) RegisterPrivateResource(name string, resource any) error { return nil }
+func (m *validateMockRuntime) RegisterResource(name string, resource any) error        { return nil }
+func (m *validateMockRuntime) RegisterSharedResource(name string, resource any) error  { return nil }
+func (m *validateMockRuntime) RegisterTypedResource(name string, resource any, resourceType string) error {
+	return nil
+}
+func (m *validateMockRuntime) RemoveListener(listener plugins.EventListener) {}
+func (m *validateMockRuntime) RemovePluginListener(pluginName string, listener plugins.EventListener) {
+}
+func (m *validateMockRuntime) SetConfig(conf config.Config)                        {}
+func (m *validateMockRuntime) SetEventDispatchMode(mode string) error              { return nil }
+func (m *validateMockRuntime) SetEventTimeout(timeout time.Duration)               {}
+func (m *validateMockRuntime) SetEventWorkerPoolSize(size int)                     {}
+func (m *validateMockRuntime) Shutdown()                                           {}
+func (m *validateMockRuntime) UnregisterPrivateResource(name string) error         { return nil }
+func (m *validateMockRuntime) UnregisterResource(name string) error                { return nil }
+func (m *validateMockRuntime) UnregisterSharedResource(name string) error          { return nil }
+func (m *validateMockRuntime) WithPluginContext(pluginName string) plugins.Runtime { return m }
 
-type mockConfig struct {
+type validateMockConfig struct {
 	values map[string]interface{}
 }
 
-func (m *mockConfig) Value(key string) interface{} {
-	return &mockValue{key: key, values: m.values}
+func (m *validateMockConfig) Value(key string) config.Value {
+	return &validateMockValue{key: key, values: m.values}
 }
 
-type mockValue struct {
+func (m *validateMockConfig) Scan(dest any) error                       { return nil }
+func (m *validateMockConfig) Load() error                               { return nil }
+func (m *validateMockConfig) Watch(key string, o config.Observer) error { return nil }
+func (m *validateMockConfig) Close() error                              { return nil }
+
+type validateMockValue struct {
 	key    string
 	values map[string]interface{}
 }
 
-func (m *mockValue) Scan(dest interface{}) error {
+func (m *validateMockValue) Scan(dest interface{}) error {
 	if val, ok := m.values[m.key]; ok {
 		if config, ok := dest.(*interfaces.Config); ok {
 			if cfg, ok := val.(*interfaces.Config); ok {
@@ -252,3 +275,14 @@ func (m *mockValue) Scan(dest interface{}) error {
 	return nil
 }
 
+func (m *validateMockValue) Bool() (bool, error)              { return false, nil }
+func (m *validateMockValue) Int() (int64, error)              { return 0, nil }
+func (m *validateMockValue) Float() (float64, error)          { return 0, nil }
+func (m *validateMockValue) String() (string, error)          { return "", nil }
+func (m *validateMockValue) Duration() (time.Duration, error) { return 0, nil }
+func (m *validateMockValue) Slice() ([]config.Value, error)   { return nil, nil }
+func (m *validateMockValue) Map() (map[string]config.Value, error) {
+	return nil, nil
+}
+func (m *validateMockValue) Load() any   { return nil }
+func (m *validateMockValue) Store(v any) {}

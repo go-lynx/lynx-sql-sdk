@@ -19,6 +19,8 @@ var (
 	ErrAlreadyClosed = errors.New("database already closed")
 )
 
+const connectionValidationCacheWindow = 5 * time.Second
+
 // ConnectionPoolStats represents database connection pool statistics
 type ConnectionPoolStats struct {
 	MaxOpenConnections int64         // Maximum number of open connections
@@ -283,26 +285,19 @@ func (p *SQLPlugin) StartupTasks() error {
 	// User can disable by explicitly setting auto_reconnect_enabled: false
 	// Note: Since Go bool zero value is false, we can't distinguish "not set" from "explicitly false"
 	// So we enable by default (production best practice) - user must explicitly disable
-	if p.config.AutoReconnectInterval > 0 {
-		// Enable unless explicitly disabled
-		// Since bool zero value is false, we enable by default (production best practice)
-		// User must explicitly set auto_reconnect_enabled: false to disable
-		shouldEnable := p.config.AutoReconnectInterval > 0 && !(p.config.AutoReconnectEnabled == false)
-
-		if shouldEnable {
-			p.autoReconnect = NewAutoReconnector(
-				p,
-				time.Duration(p.config.AutoReconnectInterval)*time.Second,
-				p.config.AutoReconnectMaxAttempts,
-			)
-			p.autoReconnect.Start(p.ctx)
-			maxAttemptsStr := "unlimited"
-			if p.config.AutoReconnectMaxAttempts > 0 {
-				maxAttemptsStr = fmt.Sprintf("%d", p.config.AutoReconnectMaxAttempts)
-			}
-			log.Infof("Auto-reconnect enabled for %s (interval: %ds, max_attempts: %s)",
-				p.Name(), p.config.AutoReconnectInterval, maxAttemptsStr)
+	if autoReconnectEnabled(p.config) {
+		p.autoReconnect = NewAutoReconnector(
+			p,
+			time.Duration(p.config.AutoReconnectInterval)*time.Second,
+			p.config.AutoReconnectMaxAttempts,
+		)
+		p.autoReconnect.Start(p.ctx)
+		maxAttemptsStr := "unlimited"
+		if p.config.AutoReconnectMaxAttempts > 0 {
+			maxAttemptsStr = fmt.Sprintf("%d", p.config.AutoReconnectMaxAttempts)
 		}
+		log.Infof("Auto-reconnect enabled for %s (interval: %ds, max_attempts: %s)",
+			p.Name(), p.config.AutoReconnectInterval, maxAttemptsStr)
 	}
 
 	// Start leak detection if enabled
@@ -534,7 +529,7 @@ func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 
 	// Ensure pool is alive before handing out: ping and reconnect once on failure
 	ensureAlive := p.config.EnsureAliveBeforeHandout == nil || *p.config.EnsureAliveBeforeHandout
-	if ensureAlive && db != nil && !p.closing.Load() {
+	if ensureAlive && db != nil && !p.closing.Load() && p.shouldPingBeforeHandout() {
 		pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
 		err := db.PingContext(pingCtx)
 		pingCancel()
@@ -546,6 +541,8 @@ func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 			p.mu.RLock()
 			db = p.db
 			p.mu.RUnlock()
+		} else {
+			p.lastPingTime.Store(time.Now().Unix())
 		}
 	}
 
@@ -702,7 +699,7 @@ func (p *SQLPlugin) IsConnected() bool {
 	// Use cached ping result if recent (within last 5 seconds)
 	lastPing := p.lastPingTime.Load()
 	now := time.Now().Unix()
-	if now-lastPing < 5 {
+	if now-lastPing < int64(connectionValidationCacheWindow/time.Second) {
 		return true // Use cached result for performance
 	}
 
@@ -748,6 +745,21 @@ func (p *SQLPlugin) GetStats() *ConnectionPoolStats {
 		MaxIdleClosed:      stats.MaxIdleClosed,
 		MaxLifetimeClosed:  stats.MaxLifetimeClosed,
 	}
+}
+
+func autoReconnectEnabled(config *interfaces.Config) bool {
+	if config == nil || config.AutoReconnectInterval <= 0 {
+		return false
+	}
+	return config.AutoReconnectEnabled == nil || *config.AutoReconnectEnabled
+}
+
+func (p *SQLPlugin) shouldPingBeforeHandout() bool {
+	lastPing := p.lastPingTime.Load()
+	if lastPing == 0 {
+		return true
+	}
+	return time.Now().Unix()-lastPing >= int64(connectionValidationCacheWindow/time.Second)
 }
 
 // getDialectFromDriver determines the dialect from the driver name
