@@ -513,7 +513,9 @@ func (p *SQLPlugin) GetDB() (*sql.DB, error) {
 // Do not cache the returned *sql.DB when auto-reconnect is enabled; after Reconnect() it becomes closed.
 func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 	if !p.IsConnected() {
-		return nil, ErrNotConnected
+		if reconnectErr := p.Reconnect(); reconnectErr != nil {
+			return nil, fmt.Errorf("%w: reconnect failed: %v", ErrNotConnected, reconnectErr)
+		}
 	}
 
 	// Check if context is cancelled
@@ -791,7 +793,7 @@ func (p *SQLPlugin) Reconnect() error {
 		return ErrAlreadyClosed
 	}
 
-	log.Infof("Attempting to reconnect database for %s", p.Name())
+	log.Debugf("Attempting to reconnect database for %s", p.Name())
 
 	// Close existing connection if any
 	if p.db != nil {
@@ -826,7 +828,7 @@ func (p *SQLPlugin) Reconnect() error {
 	p.connected.Store(true)
 	p.lastPingTime.Store(time.Now().Unix())
 
-	log.Infof("Successfully reconnected database for %s", p.Name())
+	log.Debugf("Successfully reconnected database for %s", p.Name())
 	return nil
 }
 

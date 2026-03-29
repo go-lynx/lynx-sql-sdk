@@ -107,7 +107,7 @@ func (a *AutoReconnector) checkAndReconnect() {
 	a.reconnecting.Store(true)
 	defer a.reconnecting.Store(false)
 
-	log.Infof("Attempting to reconnect %s (attempt %d)", a.target.Name(), currentAttempts+1)
+	log.Debugf("Attempting to reconnect %s (attempt %d)", a.target.Name(), currentAttempts+1)
 
 	if err := a.target.Reconnect(); err != nil {
 		a.mu.Lock()
@@ -121,7 +121,7 @@ func (a *AutoReconnector) checkAndReconnect() {
 		a.attempts = 0
 		a.mu.Unlock()
 
-		log.Infof("Successfully reconnected %s", a.target.Name())
+		log.Debugf("Successfully reconnected %s", a.target.Name())
 	}
 }
 
