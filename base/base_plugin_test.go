@@ -865,6 +865,104 @@ func TestAutoReconnectEnabled(t *testing.T) {
 	}
 }
 
+func TestSQLPlugin_TargetWarmConnections(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *interfaces.Config
+		want   int
+	}{
+		{
+			name: "uses warmup conns directly",
+			config: &interfaces.Config{
+				WarmupConns:  5,
+				MaxIdleConns: 5,
+				MaxOpenConns: 25,
+			},
+			want: 5,
+		},
+		{
+			name: "clamps to max idle",
+			config: &interfaces.Config{
+				WarmupConns:  10,
+				MaxIdleConns: 5,
+				MaxOpenConns: 25,
+			},
+			want: 5,
+		},
+		{
+			name: "clamps to max open",
+			config: &interfaces.Config{
+				WarmupConns:  10,
+				MaxIdleConns: 10,
+				MaxOpenConns: 6,
+			},
+			want: 6,
+		},
+		{
+			name: "disabled when warmup non-positive",
+			config: &interfaces.Config{
+				WarmupConns:  0,
+				MaxIdleConns: 5,
+				MaxOpenConns: 25,
+			},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := &SQLPlugin{config: tt.config}
+			if got := plugin.targetWarmConnections(); got != tt.want {
+				t.Fatalf("targetWarmConnections() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSQLPlugin_MinPoolMaintainInterval(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *interfaces.Config
+		want   time.Duration
+	}{
+		{
+			name:   "defaults when max idle time disabled",
+			config: &interfaces.Config{},
+			want:   minPoolMaintainDefaultInterval,
+		},
+		{
+			name: "uses half of idle time",
+			config: &interfaces.Config{
+				ConnMaxIdleTime: 20,
+			},
+			want: 10 * time.Second,
+		},
+		{
+			name: "clamps to minimum interval",
+			config: &interfaces.Config{
+				ConnMaxIdleTime: 1,
+			},
+			want: minPoolMaintainMinInterval,
+		},
+		{
+			name: "clamps to maximum interval",
+			config: &interfaces.Config{
+				ConnMaxIdleTime: 120,
+			},
+			want: minPoolMaintainMaxInterval,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := &SQLPlugin{config: tt.config}
+			if got := plugin.minPoolMaintainInterval(); got != tt.want {
+				t.Fatalf("minPoolMaintainInterval() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSQLPlugin_ShouldPingBeforeHandout(t *testing.T) {
 	plugin := NewBaseSQLPlugin(
 		"test-id",

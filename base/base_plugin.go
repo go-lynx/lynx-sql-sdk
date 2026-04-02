@@ -19,7 +19,14 @@ var (
 	ErrAlreadyClosed = errors.New("database already closed")
 )
 
-const connectionValidationCacheWindow = 5 * time.Second
+const (
+	connectionValidationCacheWindow   = 5 * time.Second
+	minPoolMaintainDefaultInterval    = 10 * time.Second
+	minPoolMaintainMinInterval        = 1 * time.Second
+	minPoolMaintainMaxInterval        = 30 * time.Second
+	minPoolConnectionWarmupTimeout    = 15 * time.Second
+	minPoolSingleConnectionPingWindow = 2 * time.Second
+)
 
 // ConnectionPoolStats represents database connection pool statistics
 type ConnectionPoolStats struct {
@@ -245,14 +252,11 @@ func (p *SQLPlugin) StartupTasks() error {
 	p.connected.Store(true)
 	p.lastPingTime.Store(time.Now().Unix())
 
-	// Warmup connection pool if enabled
+	// Warmup/maintain the pool asynchronously so plugin startup never blocks on
+	// creating multiple idle connections. This is important for managed databases
+	// or poolers where opening several connections may exceed the plugin startup timeout.
 	if p.config.WarmupEnabled {
-		if err := p.warmupPool(); err != nil {
-			log.Warnf("Connection pool warmup failed for %s: %v", p.Name(), err)
-			// Don't fail startup if warmup fails
-		} else {
-			log.Infof("Connection pool warmed up for %s: %d connections", p.Name(), p.config.WarmupConns)
-		}
+		go p.maintainMinPoolSize(p.ctx)
 	}
 
 	// Start health checker if configured
@@ -838,37 +842,123 @@ func (p *SQLPlugin) warmupPool() error {
 		return fmt.Errorf("database connection not initialized")
 	}
 
-	warmupCount := p.config.WarmupConns
-	if warmupCount > p.config.MaxOpenConns {
-		warmupCount = p.config.MaxOpenConns
-	}
+	return p.ensureMinPoolConnections(context.Background(), p.targetWarmConnections())
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+func (p *SQLPlugin) maintainMinPoolSize(ctx context.Context) {
+	interval := p.minPoolMaintainInterval()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
-	// Create a channel to track warmup progress
-	done := make(chan error, warmupCount)
-
-	// Pre-establish connections concurrently
-	for i := 0; i < warmupCount; i++ {
-		go func() {
-			// Use a simple query to establish connection
-			var result int
-			err := p.db.QueryRowContext(ctx, "SELECT 1").Scan(&result)
-			done <- err
-		}()
-	}
-
-	// Wait for all connections to be established
-	var lastErr error
-	for i := 0; i < warmupCount; i++ {
-		if err := <-done; err != nil {
-			lastErr = err
+	tryEnsure := func(logSuccess bool) {
+		target := p.targetWarmConnections()
+		if target <= 0 || p.closing.Load() || !p.connected.Load() {
+			return
+		}
+		if err := p.ensureMinPoolConnections(ctx, target); err != nil {
+			log.Debugf("Failed to maintain minimum pool size for %s: %v", p.Name(), err)
+			return
+		}
+		if logSuccess {
+			log.Infof("Connection pool warmed up for %s: target=%d", p.Name(), target)
 		}
 	}
 
-	if lastErr != nil {
-		return fmt.Errorf("warmup failed: %w", lastErr)
+	// Run one immediate best-effort warmup so min_conn starts taking effect right
+	// after startup, but without blocking StartupTasks().
+	tryEnsure(true)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			tryEnsure(false)
+		}
+	}
+}
+
+func (p *SQLPlugin) minPoolMaintainInterval() time.Duration {
+	if p.config.ConnMaxIdleTime <= 0 {
+		return minPoolMaintainDefaultInterval
+	}
+
+	interval := time.Duration(p.config.ConnMaxIdleTime) * time.Second / 2
+	if interval < minPoolMaintainMinInterval {
+		return minPoolMaintainMinInterval
+	}
+	if interval > minPoolMaintainMaxInterval {
+		return minPoolMaintainMaxInterval
+	}
+	return interval
+}
+
+func (p *SQLPlugin) targetWarmConnections() int {
+	target := p.config.WarmupConns
+	if target <= 0 {
+		return 0
+	}
+	if p.config.MaxOpenConns > 0 && target > p.config.MaxOpenConns {
+		target = p.config.MaxOpenConns
+	}
+	if p.config.MaxIdleConns > 0 && target > p.config.MaxIdleConns {
+		target = p.config.MaxIdleConns
+	}
+	return target
+}
+
+func (p *SQLPlugin) ensureMinPoolConnections(parent context.Context, target int) error {
+	if target <= 0 {
+		return nil
+	}
+
+	p.mu.RLock()
+	db := p.db
+	p.mu.RUnlock()
+	if db == nil {
+		return fmt.Errorf("database connection not initialized")
+	}
+
+	stats := db.Stats()
+	if stats.OpenConnections >= target {
+		return nil
+	}
+
+	deficit := target - stats.OpenConnections
+	timeout := time.Duration(deficit) * minPoolSingleConnectionPingWindow
+	if timeout < minPoolSingleConnectionPingWindow {
+		timeout = minPoolSingleConnectionPingWindow
+	}
+	if timeout > minPoolConnectionWarmupTimeout {
+		timeout = minPoolConnectionWarmupTimeout
+	}
+
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+
+	heldConns := make([]*sql.Conn, 0, deficit)
+	release := func() {
+		for _, conn := range heldConns {
+			_ = conn.Close()
+		}
+	}
+	defer release()
+
+	for i := 0; i < deficit; i++ {
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			return fmt.Errorf("acquire warmup connection %d/%d: %w", i+1, deficit, err)
+		}
+
+		pingCtx, pingCancel := context.WithTimeout(ctx, minPoolSingleConnectionPingWindow)
+		err = conn.PingContext(pingCtx)
+		pingCancel()
+		if err != nil {
+			_ = conn.Close()
+			return fmt.Errorf("ping warmup connection %d/%d: %w", i+1, deficit, err)
+		}
+
+		heldConns = append(heldConns, conn)
 	}
 
 	return nil
