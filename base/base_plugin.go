@@ -238,9 +238,9 @@ func (p *SQLPlugin) StartupTasks() error {
 	var err error
 
 	if p.config.RetryEnabled {
-		db, err = p.connectWithRetry()
+		db, err = p.connectWithRetryContext(p.ctx)
 	} else {
-		db, err = p.connect()
+		db, err = p.connectWithContext(p.ctx)
 	}
 
 	if err != nil {
@@ -329,10 +329,16 @@ func (p *SQLPlugin) StartupTasks() error {
 // connect performs a single connection attempt
 // This method ensures proper resource cleanup on failure
 func (p *SQLPlugin) connect() (*sql.DB, error) {
+	return p.connectWithContext(p.ctx)
+}
+
+func (p *SQLPlugin) connectWithContext(ctx context.Context) (*sql.DB, error) {
 	// Record connection attempt if not retrying
 	if !p.config.RetryEnabled {
 		p.metricsRecorder.IncConnectAttempt()
 	}
+
+	ctx = normalizeContext(ctx)
 
 	// Open database connection (use optional OpenDBFunc when set, e.g. for tracing)
 	var db *sql.DB
@@ -361,10 +367,10 @@ func (p *SQLPlugin) connect() (*sql.DB, error) {
 	}
 
 	// Test connection with timeout (ping + execute SQL to ensure full path works)
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(connectCtx); err != nil {
 		// Ensure we close the db on ping failure to prevent resource leaks
 		closeErr := db.Close()
 		if closeErr != nil {
@@ -382,7 +388,7 @@ func (p *SQLPlugin) connect() (*sql.DB, error) {
 		verifyQuery = p.config.HealthCheckQuery
 	}
 	var result int
-	if err := db.QueryRowContext(ctx, verifyQuery).Scan(&result); err != nil {
+	if err := db.QueryRowContext(connectCtx, verifyQuery).Scan(&result); err != nil {
 		closeErr := db.Close()
 		if closeErr != nil {
 			log.Warnf("Error closing database connection after SQL verification failure: %v", closeErr)
@@ -405,6 +411,11 @@ func (p *SQLPlugin) connect() (*sql.DB, error) {
 
 // connectWithRetry attempts connection with exponential backoff retry
 func (p *SQLPlugin) connectWithRetry() (*sql.DB, error) {
+	return p.connectWithRetryContext(p.ctx)
+}
+
+func (p *SQLPlugin) connectWithRetryContext(ctx context.Context) (*sql.DB, error) {
+	ctx = normalizeContext(ctx)
 	var lastErr error
 	delay := time.Duration(p.config.RetryInitialDelay) * time.Second
 
@@ -413,8 +424,8 @@ func (p *SQLPlugin) connectWithRetry() (*sql.DB, error) {
 	for attempt := 0; attempt <= p.config.RetryMaxAttempts; attempt++ {
 		// Check if context is cancelled before retrying
 		select {
-		case <-p.ctx.Done():
-			return nil, fmt.Errorf("connection cancelled: %w", p.ctx.Err())
+		case <-ctx.Done():
+			return nil, fmt.Errorf("connection cancelled: %w", ctx.Err())
 		default:
 		}
 
@@ -424,15 +435,16 @@ func (p *SQLPlugin) connectWithRetry() (*sql.DB, error) {
 			p.metricsRecorder.IncConnectRetry()
 
 			// Use select with context to allow cancellation during sleep
+			retryTimer := time.NewTimer(delay)
 			select {
-			case <-p.ctx.Done():
-				return nil, fmt.Errorf("connection cancelled during retry: %w", p.ctx.Err())
-			case <-time.After(delay):
-				// Continue with retry
+			case <-ctx.Done():
+				retryTimer.Stop()
+				return nil, fmt.Errorf("connection cancelled during retry: %w", ctx.Err())
+			case <-retryTimer.C:
 			}
 		}
 
-		db, err := p.connect()
+		db, err := p.connectWithContext(ctx)
 		if err == nil {
 			if attempt > 0 {
 				log.Infof("Database connection succeeded for %s after %d retries", p.Name(), attempt)
@@ -516,8 +528,13 @@ func (p *SQLPlugin) GetDB() (*sql.DB, error) {
 // it triggers Reconnect() once so the pool is not handed out when already broken.
 // Do not cache the returned *sql.DB when auto-reconnect is enabled; after Reconnect() it becomes closed.
 func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
-	if !p.IsConnected() {
-		if reconnectErr := p.Reconnect(); reconnectErr != nil {
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if !p.IsConnectedContext(ctx) {
+		if reconnectErr := p.ReconnectContext(ctx); reconnectErr != nil {
 			return nil, fmt.Errorf("%w: reconnect failed: %v", ErrNotConnected, reconnectErr)
 		}
 	}
@@ -541,7 +558,7 @@ func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 		pingCancel()
 		if err != nil {
 			// Pool is broken or has no healthy connection; replace pool so we never hand out a closed db
-			if reconnectErr := p.Reconnect(); reconnectErr != nil {
+			if reconnectErr := p.ReconnectContext(ctx); reconnectErr != nil {
 				return nil, fmt.Errorf("pool unhealthy and reconnect failed: %w", err)
 			}
 			p.mu.RLock()
@@ -573,7 +590,7 @@ func (p *SQLPlugin) GetValidatedConn(ctx context.Context) (*sql.Conn, error) {
 	if err != nil {
 		_ = conn.Close()
 		// One bad connection; try reconnect and one more time
-		if reconnectErr := p.Reconnect(); reconnectErr != nil {
+		if reconnectErr := p.ReconnectContext(ctx); reconnectErr != nil {
 			return nil, fmt.Errorf("connection validation failed and reconnect failed: %w", err)
 		}
 		db, err = p.GetDBWithContext(ctx)
@@ -637,6 +654,11 @@ func (p *SQLPlugin) GetAutoReconnector() *AutoReconnector {
 // reporting unhealthy, so a single bad connection does not cause the app to be
 // marked down or stop serving.
 func (p *SQLPlugin) CheckHealth() error {
+	return p.CheckHealthContext(context.Background())
+}
+
+func (p *SQLPlugin) CheckHealthContext(ctx context.Context) error {
+	ctx = normalizeContext(ctx)
 	query := "SELECT 1"
 	if p.config.HealthCheckQuery != "" {
 		query = p.config.HealthCheckQuery
@@ -644,36 +666,36 @@ func (p *SQLPlugin) CheckHealth() error {
 
 	// If not connected (e.g. previous Ping marked disconnected due to one bad connection),
 	// try to reconnect once before reporting unhealthy.
-	if !p.IsConnected() {
-		if err := p.Reconnect(); err != nil {
+	if !p.IsConnectedContext(ctx) {
+		if err := p.ReconnectContext(ctx); err != nil {
 			p.metricsRecorder.RecordHealthCheck(false)
-			return ErrNotConnected
+			return err
 		}
 	}
 
-	db, err := p.GetDB()
+	db, err := p.GetDBWithContext(ctx)
 	if err != nil {
 		p.metricsRecorder.RecordHealthCheck(false)
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	healthCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	var result int
-	if err := db.QueryRowContext(ctx, query).Scan(&result); err != nil {
+	if err := db.QueryRowContext(healthCtx, query).Scan(&result); err != nil {
 		// Health query failed (e.g. stale connection). Try reconnect once and retry
 		// before reporting unhealthy, so one bad connection does not mark the DB down.
-		if reconnectErr := p.Reconnect(); reconnectErr != nil {
+		if reconnectErr := p.ReconnectContext(ctx); reconnectErr != nil {
 			p.metricsRecorder.RecordHealthCheck(false)
 			return fmt.Errorf("health check failed: %w", err)
 		}
-		db, err = p.GetDB()
+		db, err = p.GetDBWithContext(ctx)
 		if err != nil {
 			p.metricsRecorder.RecordHealthCheck(false)
 			return err
 		}
-		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx2, cancel2 := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel2()
 		if err2 := db.QueryRowContext(ctx2, query).Scan(&result); err2 != nil {
 			p.metricsRecorder.RecordHealthCheck(false)
@@ -689,6 +711,10 @@ func (p *SQLPlugin) CheckHealth() error {
 // IsConnected checks if database is connected
 // This method performs actual connection validation for accuracy
 func (p *SQLPlugin) IsConnected() bool {
+	return p.IsConnectedContext(context.Background())
+}
+
+func (p *SQLPlugin) IsConnectedContext(ctx context.Context) bool {
 	if !p.connected.Load() || p.closing.Load() {
 		return false
 	}
@@ -710,10 +736,10 @@ func (p *SQLPlugin) IsConnected() bool {
 	}
 
 	// Perform actual ping check
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	pingCtx, cancel := context.WithTimeout(normalizeContext(ctx), 100*time.Millisecond)
 	defer cancel()
 
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(pingCtx); err != nil {
 		// Connection is actually down, update state
 		p.connected.Store(false)
 		return false
@@ -790,11 +816,19 @@ func (p *SQLPlugin) getDialectFromDriver(driver string) string {
 // Reconnect attempts to reconnect to the database
 // This method is called by AutoReconnector when connection is lost
 func (p *SQLPlugin) Reconnect() error {
+	return p.ReconnectContext(p.ctx)
+}
+
+func (p *SQLPlugin) ReconnectContext(ctx context.Context) error {
+	ctx = normalizeContext(ctx)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if p.closing.Load() {
 		return ErrAlreadyClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("reconnection canceled: %w", err)
 	}
 
 	log.Debugf("Attempting to reconnect database for %s", p.Name())
@@ -817,10 +851,10 @@ func (p *SQLPlugin) Reconnect() error {
 
 	if p.config.RetryEnabled {
 		// Use retry mechanism for reconnection
-		db, err = p.connectWithRetry()
+		db, err = p.connectWithRetryContext(ctx)
 	} else {
 		// Single attempt
-		db, err = p.connect()
+		db, err = p.connectWithContext(ctx)
 	}
 
 	if err != nil {
@@ -834,6 +868,13 @@ func (p *SQLPlugin) Reconnect() error {
 
 	log.Debugf("Successfully reconnected database for %s", p.Name())
 	return nil
+}
+
+func normalizeContext(ctx context.Context) context.Context {
+	if ctx != nil {
+		return ctx
+	}
+	return context.Background()
 }
 
 // warmupPool pre-establishes connections in the pool

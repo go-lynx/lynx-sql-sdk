@@ -2,7 +2,11 @@ package base
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +15,36 @@ import (
 	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/plugins"
 )
+
+const failingPingDriverName = "sqlsdk-failing-ping"
+
+func init() {
+	sql.Register(failingPingDriverName, failingPingDriver{})
+}
+
+type failingPingDriver struct{}
+
+func (failingPingDriver) Open(string) (driver.Conn, error) {
+	return failingPingConn{}, nil
+}
+
+type failingPingConn struct{}
+
+func (failingPingConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("prepare not implemented")
+}
+
+func (failingPingConn) Close() error {
+	return nil
+}
+
+func (failingPingConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("begin not implemented")
+}
+
+func (failingPingConn) Ping(context.Context) error {
+	return errors.New("ping failed")
+}
 
 // mockRuntime is a mock implementation of plugins.Runtime for testing
 type mockRuntime struct {
@@ -490,6 +524,110 @@ func TestSQLPlugin_IsConnected(t *testing.T) {
 	if plugin.IsConnected() {
 		t.Error("IsConnected should return false after cleanup")
 	}
+}
+
+func TestSQLPlugin_ReconnectContextCanceled(t *testing.T) {
+	plugin := NewBaseSQLPlugin(
+		"test-id",
+		"test-plugin",
+		"Test plugin",
+		"v1.0.0",
+		"test.prefix",
+		100,
+		&interfaces.Config{
+			Driver:       failingPingDriverName,
+			DSN:          "ignored",
+			MaxOpenConns: 1,
+			MaxIdleConns: 1,
+			OpenDBFunc: func(driver string, dsn string) (*sql.DB, error) {
+				t.Fatalf("OpenDBFunc should not be called when context is already canceled")
+				return nil, nil
+			},
+		},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := plugin.ReconnectContext(ctx)
+	if err == nil {
+		t.Fatal("expected reconnect to fail for canceled context")
+	}
+	if !strings.Contains(err.Error(), "reconnection canceled") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSQLPlugin_ConnectWithRetryContextCanceledDuringBackoff(t *testing.T) {
+	var openCalls atomic.Int32
+
+	plugin := NewBaseSQLPlugin(
+		"test-id",
+		"test-plugin",
+		"Test plugin",
+		"v1.0.0",
+		"test.prefix",
+		100,
+		&interfaces.Config{
+			Driver:            failingPingDriverName,
+			DSN:               "ignored",
+			MaxOpenConns:      1,
+			MaxIdleConns:      1,
+			RetryMaxAttempts:  3,
+			RetryInitialDelay: 1,
+			RetryMaxDelay:     1,
+			RetryMultiplier:   2,
+			OpenDBFunc: func(driver string, dsn string) (*sql.DB, error) {
+				openCalls.Add(1)
+				return sql.Open(failingPingDriverName, dsn)
+			},
+		},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := plugin.connectWithRetryContext(ctx)
+		errCh <- err
+	}()
+
+	waitForValue(t, 500*time.Millisecond, func() bool {
+		return openCalls.Load() == 1
+	})
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected retry loop to return an error")
+		}
+		if !strings.Contains(err.Error(), "connection cancelled during retry") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("retry loop did not stop after context cancellation")
+	}
+
+	if openCalls.Load() != 1 {
+		t.Fatalf("expected a single connection attempt before cancellation, got %d", openCalls.Load())
+	}
+}
+
+func waitForValue(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("condition was not met before timeout")
 }
 
 func TestSQLPlugin_GetStats(t *testing.T) {
