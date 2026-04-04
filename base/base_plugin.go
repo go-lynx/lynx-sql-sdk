@@ -48,6 +48,8 @@ type SQLPlugin struct {
 	// Configuration
 	config     *interfaces.Config
 	confPrefix string
+	runtime    plugins.Runtime
+	provider   interfaces.DBProvider
 
 	// Database connection
 	db      *sql.DB
@@ -104,6 +106,8 @@ func NewBaseSQLPlugin(
 
 // InitializeResources initializes plugin resources
 func (p *SQLPlugin) InitializeResources(rt plugins.Runtime) error {
+	p.bindRuntime(rt)
+
 	// Load configuration
 	if err := rt.GetConfig().Value(p.confPrefix).Scan(p.config); err != nil {
 		return fmt.Errorf("failed to load configuration: %w", err)
@@ -323,6 +327,7 @@ func (p *SQLPlugin) StartupTasks() error {
 	}
 
 	log.Infof("Database connection established for %s", p.Name())
+	p.publishResourceContract()
 	return nil
 }
 
@@ -868,6 +873,7 @@ func (p *SQLPlugin) ReconnectContext(ctx context.Context) error {
 	p.lastPingTime.Store(time.Now().Unix())
 
 	log.Debugf("Successfully reconnected database for %s", p.Name())
+	p.publishResourceContract()
 	return nil
 }
 

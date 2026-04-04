@@ -2,7 +2,16 @@
 
 `lynx-sql-sdk` is the shared SQL runtime layer used by concrete database plugins such as `lynx-mysql`, `lynx-pgsql`, and `lynx-mssql`.
 
-It is not a standalone Lynx runtime plugin and it does not own a separate `lynx.sql` YAML block.
+## Positioning
+
+`lynx-sql-sdk` is not a standalone Lynx runtime plugin. It does not register an application-loadable plugin by itself, and it does not own a separate `lynx.sql` YAML block.
+
+It is a library/runtime base that concrete plugins integrate, for example:
+
+- `lynx-mysql` or another concrete SQL plugin constructs `base.NewBaseSQLPlugin(...)`
+- the concrete plugin scans its own YAML root such as `lynx.mysql`
+- the concrete plugin exposes the application-facing plugin getter / `GetDB()` path
+- business code depends on the concrete plugin, not on `lynx-sql-sdk` as an independently loaded runtime module
 
 ## What this repo owns
 
@@ -29,6 +38,16 @@ Configure the concrete plugin you actually run:
 - MSSQL: `lynx.mssql`
 
 The shared config fields consumed by `base.SQLPlugin` are defined in [`interfaces/sql.go`](./interfaces/sql.go), but those fields must live under the concrete plugin's YAML root.
+
+## Typical integration path
+
+Typical usage is:
+
+1. the service imports and loads a concrete plugin such as `lynx-mysql`
+2. that concrete plugin reuses `lynx-sql-sdk/base.SQLPlugin` for connection, reconnect, health, and cleanup semantics
+3. application code resolves the concrete plugin from Lynx and uses its DB access surface
+
+This repo is therefore a shared implementation dependency, not a first-class runtime plugin entry for application bootstrapping.
 
 ## Runtime guidance
 

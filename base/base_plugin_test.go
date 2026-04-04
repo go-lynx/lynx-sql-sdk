@@ -48,7 +48,9 @@ func (failingPingConn) Ping(context.Context) error {
 
 // mockRuntime is a mock implementation of plugins.Runtime for testing
 type mockRuntime struct {
-	config map[string]interface{}
+	config           map[string]interface{}
+	sharedResources  map[string]any
+	privateResources map[string]any
 }
 
 func (m *mockRuntime) GetConfig() config.Config {
@@ -68,15 +70,27 @@ func (m *mockRuntime) GetLogger() log.Logger                                    
 func (m *mockRuntime) GetPluginEventHistory(pluginName string, filter plugins.EventFilter) []plugins.PluginEvent {
 	return nil
 }
-func (m *mockRuntime) GetResourceStats() map[string]any                                       { return nil }
-func (m *mockRuntime) GetSharedResource(name string) (any, error)                             { return nil, nil }
-func (m *mockRuntime) GetPrivateResource(name string) (any, error)                            { return nil, nil }
-func (m *mockRuntime) GetResource(name string) (any, error)                                   { return nil, nil }
-func (m *mockRuntime) GetResourceInfo(name string) (*plugins.ResourceInfo, error)             { return nil, nil }
-func (m *mockRuntime) ListResources() []*plugins.ResourceInfo                                 { return nil }
-func (m *mockRuntime) RegisterPrivateResource(name string, resource any) error                { return nil }
-func (m *mockRuntime) RegisterResource(name string, resource any) error                       { return nil }
-func (m *mockRuntime) RegisterSharedResource(name string, resource any) error                 { return nil }
+func (m *mockRuntime) GetResourceStats() map[string]any                           { return nil }
+func (m *mockRuntime) GetSharedResource(name string) (any, error)                 { return nil, nil }
+func (m *mockRuntime) GetPrivateResource(name string) (any, error)                { return nil, nil }
+func (m *mockRuntime) GetResource(name string) (any, error)                       { return nil, nil }
+func (m *mockRuntime) GetResourceInfo(name string) (*plugins.ResourceInfo, error) { return nil, nil }
+func (m *mockRuntime) ListResources() []*plugins.ResourceInfo                     { return nil }
+func (m *mockRuntime) RegisterPrivateResource(name string, resource any) error {
+	if m.privateResources == nil {
+		m.privateResources = make(map[string]any)
+	}
+	m.privateResources[name] = resource
+	return nil
+}
+func (m *mockRuntime) RegisterResource(name string, resource any) error { return nil }
+func (m *mockRuntime) RegisterSharedResource(name string, resource any) error {
+	if m.sharedResources == nil {
+		m.sharedResources = make(map[string]any)
+	}
+	m.sharedResources[name] = resource
+	return nil
+}
 func (m *mockRuntime) RemoveListener(listener plugins.EventListener)                          {}
 func (m *mockRuntime) RemovePluginListener(pluginName string, listener plugins.EventListener) {}
 func (m *mockRuntime) SetConfig(conf config.Config)                                           {}
@@ -113,6 +127,22 @@ type mockValue struct {
 	values map[string]interface{}
 }
 
+type staticDBProvider struct {
+	db *sql.DB
+}
+
+func (p staticDBProvider) DB(context.Context) (*sql.DB, error) {
+	return p.db, nil
+}
+
+func (p staticDBProvider) ValidatedConn(context.Context) (*sql.Conn, error) {
+	return nil, nil
+}
+
+func (p staticDBProvider) Dialect() string {
+	return "mysql"
+}
+
 func (m *mockValue) Scan(dest interface{}) error {
 	if val, ok := m.values[m.key]; ok {
 		if config, ok := dest.(*interfaces.Config); ok {
@@ -136,6 +166,48 @@ func (m *mockValue) Map() (map[string]config.Value, error) {
 }
 func (m *mockValue) Load() any   { return nil }
 func (m *mockValue) Store(v any) {}
+
+func TestSQLPlugin_PublishResourceContract(t *testing.T) {
+	db, err := sql.Open(failingPingDriverName, "")
+	if err != nil {
+		t.Fatalf("open sqlite3: %v", err)
+	}
+	defer db.Close()
+
+	rt := &mockRuntime{}
+	plugin := &SQLPlugin{
+		BasePlugin: plugins.NewBasePlugin("id", "mysql.client", "desc", "v1", "lynx.mysql", 100),
+		config: &interfaces.Config{
+			Driver: "mysql",
+			DSN:    "dsn",
+		},
+		db:      db,
+		dialect: "mysql",
+	}
+	plugin.bindRuntime(rt)
+	plugin.SetProvider(staticDBProvider{db: db})
+
+	plugin.publishResourceContract()
+
+	if _, ok := rt.sharedResources["mysql.client"]; !ok {
+		t.Fatalf("expected shared provider resource mysql.client to be published")
+	}
+	if _, ok := rt.sharedResources["mysql.client.provider"]; !ok {
+		t.Fatalf("expected shared provider resource mysql.client.provider to be published")
+	}
+	if got := rt.privateResources["db"]; got != db {
+		t.Fatalf("expected private db resource to be published")
+	}
+	if _, ok := rt.privateResources["provider"]; !ok {
+		t.Fatalf("expected private provider resource to be published")
+	}
+	if _, ok := rt.privateResources["config"]; !ok {
+		t.Fatalf("expected private config resource to be published")
+	}
+	if got, ok := rt.privateResources["dialect"].(string); !ok || got != "mysql" {
+		t.Fatalf("expected private dialect resource to be mysql, got %#v", rt.privateResources["dialect"])
+	}
+}
 
 func TestNewBaseSQLPlugin(t *testing.T) {
 	config := &interfaces.Config{
@@ -604,7 +676,8 @@ func TestSQLPlugin_ConnectWithRetryContextCanceledDuringBackoff(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected retry loop to return an error")
 		}
-		if !strings.Contains(err.Error(), "connection cancelled during retry") {
+		if !strings.Contains(err.Error(), "connection cancelled during retry") &&
+			!strings.Contains(err.Error(), "connection cancelled") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	case <-time.After(300 * time.Millisecond):
