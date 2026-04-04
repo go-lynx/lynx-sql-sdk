@@ -470,7 +470,7 @@ func (p *SQLPlugin) connectWithRetryContext(ctx context.Context) (*sql.DB, error
 // CleanupTasks performs cleanup on shutdown
 func (p *SQLPlugin) CleanupTasks() error {
 	if !p.closing.CompareAndSwap(false, true) {
-		return ErrAlreadyClosed
+		return nil
 	}
 
 	log.Infof("Shutting down database connection for %s", p.Name())
@@ -508,6 +508,7 @@ func (p *SQLPlugin) CleanupTasks() error {
 		} else {
 			log.Infof("Database connection closed for %s", p.Name())
 		}
+		p.db = nil
 	}
 
 	p.connected.Store(false)

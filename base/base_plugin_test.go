@@ -737,11 +737,9 @@ func TestSQLPlugin_Reconnect(t *testing.T) {
 }
 
 func TestSQLPlugin_CleanupTasks(t *testing.T) {
-	t.Skip("Skipping test that requires database connection")
-
 	config := &interfaces.Config{
-		Driver:                "sqlite3",
-		DSN:                   ":memory:",
+		Driver:                failingPingDriverName,
+		DSN:                   "cleanup-test",
 		MaxOpenConns:          10,
 		MaxIdleConns:          5,
 		HealthCheckInterval:   0,
@@ -758,21 +756,13 @@ func TestSQLPlugin_CleanupTasks(t *testing.T) {
 		config,
 	)
 
-	rt := &mockRuntime{
-		config: map[string]interface{}{
-			"test.prefix": config,
-		},
+	db, err := sql.Open(failingPingDriverName, "cleanup-test")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
 	}
 
-	err := plugin.InitializeResources(rt)
-	if err != nil {
-		t.Fatalf("InitializeResources failed: %v", err)
-	}
-
-	err = plugin.StartupTasks()
-	if err != nil {
-		t.Fatalf("StartupTasks failed: %v", err)
-	}
+	plugin.db = db
+	plugin.connected.Store(true)
 
 	// Test CleanupTasks
 	err = plugin.CleanupTasks()
@@ -780,14 +770,17 @@ func TestSQLPlugin_CleanupTasks(t *testing.T) {
 		t.Fatalf("CleanupTasks failed: %v", err)
 	}
 
-	// Test double cleanup (should return error)
+	// Test double cleanup (should be idempotent)
 	err = plugin.CleanupTasks()
-	if err == nil {
-		t.Error("CleanupTasks should return error on second call")
+	if err != nil {
+		t.Fatalf("CleanupTasks should be idempotent, got error: %v", err)
 	}
 
 	if plugin.IsConnected() {
 		t.Error("Plugin should not be connected after cleanup")
+	}
+	if plugin.db != nil {
+		t.Error("Plugin should clear database handle after cleanup")
 	}
 }
 
