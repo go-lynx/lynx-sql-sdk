@@ -56,9 +56,10 @@ type SQLPlugin struct {
 	dialect string
 
 	// Connection state
-	mu        sync.RWMutex
-	connected atomic.Bool
-	closing   atomic.Bool
+	mu          sync.RWMutex
+	lifecycleMu sync.Mutex
+	connected   atomic.Bool
+	closing     atomic.Bool
 
 	// Health check
 	healthChecker *HealthChecker
@@ -228,11 +229,14 @@ func (p *SQLPlugin) validateConfig() error {
 
 // StartupTasks performs startup initialization with retry support
 func (p *SQLPlugin) StartupTasks() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
 
 	if p.connected.Load() {
 		return errors.New("already connected")
+	}
+	if p.closing.Load() {
+		return ErrAlreadyClosed
 	}
 
 	log.Infof("Initializing database connection for %s", p.Name())
@@ -251,10 +255,13 @@ func (p *SQLPlugin) StartupTasks() error {
 		return err
 	}
 
+	dialect := p.getDialectFromDriver(p.config.Driver)
+	p.mu.Lock()
 	p.db = db
-	p.dialect = p.getDialectFromDriver(p.config.Driver)
+	p.dialect = dialect
 	p.connected.Store(true)
 	p.lastPingTime.Store(time.Now().Unix())
+	p.mu.Unlock()
 
 	// Warmup/maintain the pool asynchronously so plugin startup never blocks on
 	// creating multiple idle connections. This is important for managed databases
@@ -477,6 +484,8 @@ func (p *SQLPlugin) CleanupTasks() error {
 	if !p.closing.CompareAndSwap(false, true) {
 		return nil
 	}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
 
 	log.Infof("Shutting down database connection for %s", p.Name())
 
@@ -827,27 +836,26 @@ func (p *SQLPlugin) Reconnect() error {
 
 func (p *SQLPlugin) ReconnectContext(ctx context.Context) error {
 	ctx = normalizeContext(ctx)
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
 
+	p.mu.Lock()
 	if p.closing.Load() {
+		p.mu.Unlock()
 		return ErrAlreadyClosed
 	}
 	if err := ctx.Err(); err != nil {
+		p.mu.Unlock()
 		return fmt.Errorf("reconnection canceled: %w", err)
 	}
 
 	log.Debugf("Attempting to reconnect database for %s", p.Name())
 
-	// Close existing connection if any
-	if p.db != nil {
-		// Don't log error on close, just close it
-		_ = p.db.Close()
-		p.db = nil
-	}
-
-	// Reset connection state
+	// Keep the old pool until the replacement has been opened and verified.
+	// This avoids turning a failed reconnect attempt into an immediate resource drop.
+	oldDB := p.db
 	p.connected.Store(false)
+	p.mu.Unlock()
 
 	// Attempt to reconnect
 	// Note: connect() and connectWithRetry() use p.ctx for timeouts
@@ -868,9 +876,14 @@ func (p *SQLPlugin) ReconnectContext(ctx context.Context) error {
 	}
 
 	// Update connection state
+	p.mu.Lock()
 	p.db = db
 	p.connected.Store(true)
 	p.lastPingTime.Store(time.Now().Unix())
+	p.mu.Unlock()
+	if oldDB != nil {
+		_ = oldDB.Close()
+	}
 
 	log.Debugf("Successfully reconnected database for %s", p.Name())
 	p.publishResourceContract()

@@ -19,7 +19,7 @@ func main() {
 
 	// 测试MySQL
 	fmt.Println("测试MySQL连接...")
-	mysqlDSN := "lynx:lynx123456@tcp(localhost:3306)/lynx_test?charset=utf8mb4&parseTime=True"
+	mysqlDSN := requiredEnv("LYNX_SQLSDK_MYSQL_DSN")
 	mysqlDB, err := sql.Open("mysql", mysqlDSN)
 	if err != nil {
 		fmt.Printf("❌ MySQL连接失败: %v\n", err)
@@ -44,7 +44,7 @@ func main() {
 
 	// 测试PostgreSQL
 	fmt.Println("测试PostgreSQL连接...")
-	pgDSN := "postgres://lynx:lynx123456@localhost:5432/lynx_test?sslmode=disable"
+	pgDSN := requiredEnv("LYNX_SQLSDK_POSTGRES_DSN")
 	pgDB, err := sql.Open("pgx", pgDSN)
 	if err != nil {
 		fmt.Printf("❌ PostgreSQL连接失败: %v\n", err)
@@ -66,7 +66,7 @@ func main() {
 	}
 
 	fmt.Println("\n=== 验证完成 ===")
-	
+
 	// 如果都成功，退出码为0，否则为1
 	if mysqlDB != nil && pgDB != nil {
 		os.Exit(0)
@@ -75,3 +75,11 @@ func main() {
 	}
 }
 
+func requiredEnv(key string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		fmt.Printf("❌ 环境变量 %s 未设置\n", key)
+		os.Exit(1)
+	}
+	return value
+}

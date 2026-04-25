@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,10 +17,14 @@ import (
 	"github.com/go-lynx/lynx/plugins"
 )
 
-const failingPingDriverName = "sqlsdk-failing-ping"
+const (
+	failingPingDriverName = "sqlsdk-failing-ping"
+	successDriverName     = "sqlsdk-success"
+)
 
 func init() {
 	sql.Register(failingPingDriverName, failingPingDriver{})
+	sql.Register(successDriverName, successDriver{})
 }
 
 type failingPingDriver struct{}
@@ -44,6 +49,55 @@ func (failingPingConn) Begin() (driver.Tx, error) {
 
 func (failingPingConn) Ping(context.Context) error {
 	return errors.New("ping failed")
+}
+
+type successDriver struct{}
+
+func (successDriver) Open(string) (driver.Conn, error) {
+	return successConn{}, nil
+}
+
+type successConn struct{}
+
+func (successConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("prepare not implemented")
+}
+
+func (successConn) Close() error {
+	return nil
+}
+
+func (successConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("begin not implemented")
+}
+
+func (successConn) Ping(context.Context) error {
+	return nil
+}
+
+func (successConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	return &singleValueRows{}, nil
+}
+
+type singleValueRows struct {
+	sent bool
+}
+
+func (*singleValueRows) Columns() []string {
+	return []string{"value"}
+}
+
+func (*singleValueRows) Close() error {
+	return nil
+}
+
+func (r *singleValueRows) Next(dest []driver.Value) error {
+	if r.sent {
+		return io.EOF
+	}
+	dest[0] = int64(1)
+	r.sent = true
+	return nil
 }
 
 // mockRuntime is a mock implementation of plugins.Runtime for testing
@@ -409,6 +463,167 @@ func TestSQLPlugin_StartupTasks(t *testing.T) {
 	}
 
 	// Cleanup
+	_ = plugin.CleanupTasks()
+}
+
+func TestSQLPlugin_StartupTasksPublishesResourcesWithoutDeadlock(t *testing.T) {
+	config := &interfaces.Config{
+		Driver:                successDriverName,
+		DSN:                   "startup-publish",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
+		AutoReconnectInterval: 0,
+	}
+
+	plugin := NewBaseSQLPlugin(
+		"test-id",
+		"test-plugin",
+		"Test plugin",
+		"v1.0.0",
+		"test.prefix",
+		100,
+		config,
+	)
+	plugin.SetProvider(staticDBProvider{})
+
+	rt := &mockRuntime{
+		config: map[string]interface{}{
+			"test.prefix": config,
+		},
+	}
+	if err := plugin.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources failed: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- plugin.StartupTasks()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("StartupTasks failed: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("StartupTasks deadlocked while publishing resources")
+	}
+
+	if _, ok := rt.sharedResources["test-plugin"]; !ok {
+		t.Fatal("expected shared provider resource to be published")
+	}
+	if _, ok := rt.sharedResources["test-plugin.provider"]; !ok {
+		t.Fatal("expected canonical shared provider resource to be published")
+	}
+
+	_ = plugin.CleanupTasks()
+}
+
+func TestSQLPlugin_ReconnectPublishesResourcesWithoutDeadlock(t *testing.T) {
+	config := &interfaces.Config{
+		Driver:                successDriverName,
+		DSN:                   "reconnect-publish",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
+		AutoReconnectInterval: 0,
+	}
+
+	plugin := NewBaseSQLPlugin(
+		"test-id",
+		"test-plugin",
+		"Test plugin",
+		"v1.0.0",
+		"test.prefix",
+		100,
+		config,
+	)
+	plugin.SetProvider(staticDBProvider{})
+
+	rt := &mockRuntime{
+		config: map[string]interface{}{
+			"test.prefix": config,
+		},
+	}
+	if err := plugin.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources failed: %v", err)
+	}
+	if err := plugin.StartupTasks(); err != nil {
+		t.Fatalf("StartupTasks failed: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- plugin.Reconnect()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Reconnect failed: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Reconnect deadlocked while publishing resources")
+	}
+
+	_ = plugin.CleanupTasks()
+}
+
+func TestSQLPlugin_ReconnectFailurePreservesExistingPool(t *testing.T) {
+	config := &interfaces.Config{
+		Driver:                successDriverName,
+		DSN:                   "reconnect-preserve",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
+		AutoReconnectInterval: 0,
+	}
+
+	plugin := NewBaseSQLPlugin(
+		"test-id",
+		"test-plugin",
+		"Test plugin",
+		"v1.0.0",
+		"test.prefix",
+		100,
+		config,
+	)
+
+	rt := &mockRuntime{
+		config: map[string]interface{}{
+			"test.prefix": config,
+		},
+	}
+	if err := plugin.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources failed: %v", err)
+	}
+	if err := plugin.StartupTasks(); err != nil {
+		t.Fatalf("StartupTasks failed: %v", err)
+	}
+
+	plugin.mu.RLock()
+	oldDB := plugin.db
+	plugin.mu.RUnlock()
+	if oldDB == nil {
+		t.Fatal("expected startup to create a db pool")
+	}
+
+	plugin.config.Driver = failingPingDriverName
+	if err := plugin.Reconnect(); err == nil {
+		t.Fatal("expected reconnect to fail with failing ping driver")
+	}
+
+	plugin.mu.RLock()
+	currentDB := plugin.db
+	plugin.mu.RUnlock()
+	if currentDB != oldDB {
+		t.Fatal("failed reconnect should preserve existing pool until a replacement succeeds")
+	}
+	if plugin.connected.Load() {
+		t.Fatal("failed reconnect should mark plugin disconnected")
+	}
+
 	_ = plugin.CleanupTasks()
 }
 

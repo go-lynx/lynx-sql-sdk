@@ -169,7 +169,7 @@ func testPostgreSQLPlugin() error {
 }
 
 func isMySQLAvailable() bool {
-	db, err := sql.Open("mysql", "lynx:lynx123456@tcp(localhost:3306)/lynx_test?charset=utf8mb4&parseTime=True")
+	db, err := sql.Open("mysql", requiredEnv("LYNX_SQLSDK_MYSQL_DSN"))
 	if err != nil {
 		return false
 	}
@@ -185,7 +185,7 @@ func isMySQLAvailable() bool {
 }
 
 func isPostgreSQLAvailable() bool {
-	db, err := sql.Open("pgx", "postgres://lynx:lynx123456@localhost:5432/lynx_test?sslmode=disable")
+	db, err := sql.Open("pgx", requiredEnv("LYNX_SQLSDK_POSTGRES_DSN"))
 	if err != nil {
 		return false
 	}
@@ -205,7 +205,7 @@ func createMySQLRuntime() plugins.Runtime {
 		values: map[string]interface{}{
 			"lynx.mysql": &interfaces.Config{
 				Driver:                "mysql",
-				DSN:                   "lynx:lynx123456@tcp(localhost:3306)/lynx_test?charset=utf8mb4&parseTime=True",
+				DSN:                   requiredEnv("LYNX_SQLSDK_MYSQL_DSN"),
 				MaxOpenConns:          10,
 				MaxIdleConns:          5,
 				ConnMaxLifetime:       3600,
@@ -226,7 +226,7 @@ func createPostgreSQLRuntime() plugins.Runtime {
 		values: map[string]interface{}{
 			"lynx.pgsql": &conf.Pgsql{
 				Driver:  "pgx",
-				Source:  "postgres://lynx:lynx123456@localhost:5432/lynx_test?sslmode=disable",
+				Source:  requiredEnv("LYNX_SQLSDK_POSTGRES_DSN"),
 				MinConn: 5,
 				MaxConn: 20,
 			},
@@ -236,6 +236,15 @@ func createPostgreSQLRuntime() plugins.Runtime {
 	rt := lynx.NewTypedRuntimePlugin()
 	rt.SetConfig(mockConfig)
 	return rt
+}
+
+func requiredEnv(key string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		fmt.Printf("❌ 环境变量 %s 未设置\n", key)
+		os.Exit(1)
+	}
+	return value
 }
 
 // mockConfig实现
