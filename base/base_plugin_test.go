@@ -102,7 +102,7 @@ func (r *singleValueRows) Next(dest []driver.Value) error {
 
 // mockRuntime is a mock implementation of plugins.Runtime for testing
 type mockRuntime struct {
-	config           map[string]interface{}
+	config           map[string]any
 	sharedResources  map[string]any
 	privateResources map[string]any
 }
@@ -164,7 +164,7 @@ func (m *mockRuntime) RegisterTypedResource(name string, resource any, resourceT
 }
 
 type mockConfig struct {
-	values map[string]interface{}
+	values map[string]any
 }
 
 func (m *mockConfig) Value(key string) config.Value {
@@ -178,7 +178,7 @@ func (m *mockConfig) Close() error                              { return nil }
 
 type mockValue struct {
 	key    string
-	values map[string]interface{}
+	values map[string]any
 }
 
 type staticDBProvider struct {
@@ -197,7 +197,7 @@ func (p staticDBProvider) Dialect() string {
 	return "mysql"
 }
 
-func (m *mockValue) Scan(dest interface{}) error {
+func (m *mockValue) Scan(dest any) error {
 	if val, ok := m.values[m.key]; ok {
 		if config, ok := dest.(*interfaces.Config); ok {
 			if cfg, ok := val.(*interfaces.Config); ok {
@@ -313,7 +313,7 @@ func TestSQLPlugin_InitializeResources(t *testing.T) {
 	)
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -405,7 +405,7 @@ func TestSQLPlugin_ValidateConfig(t *testing.T) {
 			)
 
 			rt := &mockRuntime{
-				config: map[string]interface{}{
+				config: map[string]any{
 					"test.prefix": tt.config,
 				},
 			}
@@ -443,7 +443,7 @@ func TestSQLPlugin_StartupTasks(t *testing.T) {
 	)
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -488,7 +488,7 @@ func TestSQLPlugin_StartupTasksPublishesResourcesWithoutDeadlock(t *testing.T) {
 	plugin.SetProvider(staticDBProvider{})
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -542,7 +542,7 @@ func TestSQLPlugin_ReconnectPublishesResourcesWithoutDeadlock(t *testing.T) {
 	plugin.SetProvider(staticDBProvider{})
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -591,7 +591,7 @@ func TestSQLPlugin_ReconnectFailurePreservesExistingPool(t *testing.T) {
 	)
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -650,7 +650,7 @@ func TestSQLPlugin_GetDB(t *testing.T) {
 	)
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -725,7 +725,7 @@ func TestSQLPlugin_CheckHealth(t *testing.T) {
 	)
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -756,6 +756,63 @@ func TestSQLPlugin_CheckHealth(t *testing.T) {
 	_ = plugin.CleanupTasks()
 }
 
+func TestSQLPlugin_CheckHealthDoesNotReconnectWhenDisabled(t *testing.T) {
+	autoReconnect := false
+	config := &interfaces.Config{
+		Driver:                successDriverName,
+		DSN:                   "success",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
+		AutoReconnectEnabled:  &autoReconnect,
+		AutoReconnectInterval: 5,
+		RetryEnabled:          false,
+	}
+
+	plugin := NewBaseSQLPlugin(
+		"test-id",
+		"test-plugin",
+		"Test plugin",
+		"v1.0.0",
+		"test.prefix",
+		100,
+		config,
+	)
+
+	rt := &mockRuntime{
+		config: map[string]any{
+			"test.prefix": config,
+		},
+	}
+
+	if err := plugin.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources failed: %v", err)
+	}
+	if err := plugin.StartupTasks(); err != nil {
+		t.Fatalf("StartupTasks failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = plugin.CleanupTasks()
+	})
+
+	plugin.mu.RLock()
+	db := plugin.db
+	plugin.mu.RUnlock()
+	if db == nil {
+		t.Fatal("expected db to be initialized")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("failed to close db: %v", err)
+	}
+
+	if err := plugin.CheckHealth(); err == nil {
+		t.Fatal("CheckHealth should fail instead of reconnecting when auto-reconnect is disabled")
+	}
+	if plugin.IsConnected() {
+		t.Fatal("plugin should remain disconnected after failed health check")
+	}
+}
+
 func TestSQLPlugin_IsConnected(t *testing.T) {
 	t.Skip("Skipping test that requires database connection")
 
@@ -779,7 +836,7 @@ func TestSQLPlugin_IsConnected(t *testing.T) {
 	)
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -941,7 +998,7 @@ func TestSQLPlugin_GetStats(t *testing.T) {
 	)
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -995,7 +1052,7 @@ func TestSQLPlugin_Reconnect(t *testing.T) {
 	)
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -1109,7 +1166,7 @@ func TestSQLPlugin_GetDialect(t *testing.T) {
 			)
 
 			rt := &mockRuntime{
-				config: map[string]interface{}{
+				config: map[string]any{
 					"test.prefix": config,
 				},
 			}
@@ -1155,7 +1212,7 @@ func TestSQLPlugin_ConnectionRetry(t *testing.T) {
 	)
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -1195,7 +1252,7 @@ func TestSQLPlugin_ConcurrentAccess(t *testing.T) {
 	)
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -1431,7 +1488,7 @@ func TestSQLPlugin_QueryExecution(t *testing.T) {
 	)
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			"test.prefix": config,
 		},
 	}
@@ -1477,3 +1534,159 @@ func TestSQLPlugin_QueryExecution(t *testing.T) {
 	// Cleanup
 	_ = plugin.CleanupTasks()
 }
+
+// TestSQLPlugin_ConcurrentInitialization verifies that independent plugins can be
+// initialised concurrently without races (each goroutine uses its own instance).
+func TestSQLPlugin_ConcurrentInitialization(t *testing.T) {
+	const workers = 10
+
+	baseCfg := &interfaces.Config{
+		Driver:       successDriverName,
+		DSN:          "concurrent-init",
+		MaxOpenConns: 10,
+		MaxIdleConns: 5,
+	}
+	rt := &mockRuntime{
+		config: map[string]any{"test.prefix": baseCfg},
+	}
+
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			cfg := &interfaces.Config{
+				Driver:       successDriverName,
+				DSN:          "concurrent-init",
+				MaxOpenConns: 10,
+				MaxIdleConns: 5,
+			}
+			p := NewBaseSQLPlugin("id", "test-plugin", "desc", "v1", "test.prefix", 100, cfg)
+			errs <- p.InitializeResources(rt)
+		}()
+	}
+	for i := 0; i < workers; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent InitializeResources returned error: %v", err)
+		}
+	}
+}
+
+// TestSQLPlugin_StartupAndRestart verifies that a plugin can be started, cleaned up,
+// and then re-initialized and started again (simulating a plugin restart).
+func TestSQLPlugin_StartupAndRestart(t *testing.T) {
+	for cycle := range 2 {
+		cfg := &interfaces.Config{
+			Driver:                successDriverName,
+			DSN:                   "restart-test",
+			MaxOpenConns:          5,
+			MaxIdleConns:          2,
+			HealthCheckInterval:   0,
+			AutoReconnectInterval: 0,
+		}
+		rt := &mockRuntime{config: map[string]any{"test.prefix": cfg}}
+		plugin := NewBaseSQLPlugin("id", "test-plugin", "desc", "v1", "test.prefix", 100, cfg)
+
+		if err := plugin.InitializeResources(rt); err != nil {
+			t.Fatalf("cycle %d: InitializeResources: %v", cycle, err)
+		}
+		if err := plugin.StartupTasks(); err != nil {
+			t.Fatalf("cycle %d: StartupTasks: %v", cycle, err)
+		}
+		if !plugin.connected.Load() {
+			t.Fatalf("cycle %d: expected connected=true after startup", cycle)
+		}
+		if err := plugin.CleanupTasks(); err != nil {
+			t.Fatalf("cycle %d: CleanupTasks: %v", cycle, err)
+		}
+		if plugin.connected.Load() {
+			t.Fatalf("cycle %d: expected connected=false after cleanup", cycle)
+		}
+	}
+}
+
+// TestSQLPlugin_MetricsRecorderCalledOnStartup verifies that connection attempt /
+// success counters are incremented when the plugin connects successfully.
+func TestSQLPlugin_MetricsRecorderCalledOnStartup(t *testing.T) {
+	cfg := &interfaces.Config{
+		Driver:                successDriverName,
+		DSN:                   "metrics-on-startup",
+		MaxOpenConns:          5,
+		MaxIdleConns:          2,
+		HealthCheckInterval:   0,
+		AutoReconnectInterval: 0,
+	}
+	rt := &mockRuntime{config: map[string]any{"test.prefix": cfg}}
+
+	plugin := NewBaseSQLPlugin("id", "test-plugin", "desc", "v1", "test.prefix", 100, cfg)
+	rec := &countingMetricsRecorder{}
+	plugin.SetMetricsRecorder(rec)
+
+	if err := plugin.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources: %v", err)
+	}
+	if err := plugin.StartupTasks(); err != nil {
+		t.Fatalf("StartupTasks: %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.CleanupTasks() })
+
+	if rec.connectAttempts == 0 {
+		t.Error("expected at least one connect attempt to be recorded")
+	}
+	if rec.connectSuccess == 0 {
+		t.Error("expected at least one connect success to be recorded")
+	}
+	if rec.connectFailures != 0 {
+		t.Errorf("expected zero connect failures, got %d", rec.connectFailures)
+	}
+}
+
+// TestSQLPlugin_MetricsRecorderCalledOnFailedConnect verifies that the connect
+// failure counter is incremented when the plugin cannot connect.
+func TestSQLPlugin_MetricsRecorderCalledOnFailedConnect(t *testing.T) {
+	cfg := &interfaces.Config{
+		Driver:                failingPingDriverName,
+		DSN:                   "metrics-on-failure",
+		MaxOpenConns:          5,
+		MaxIdleConns:          2,
+		HealthCheckInterval:   0,
+		AutoReconnectInterval: 0,
+	}
+	rt := &mockRuntime{config: map[string]any{"test.prefix": cfg}}
+
+	plugin := NewBaseSQLPlugin("id", "test-plugin", "desc", "v1", "test.prefix", 100, cfg)
+	rec := &countingMetricsRecorder{}
+	plugin.SetMetricsRecorder(rec)
+
+	if err := plugin.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources: %v", err)
+	}
+	// StartupTasks should fail because ping fails.
+	if err := plugin.StartupTasks(); err == nil {
+		_ = plugin.CleanupTasks()
+		t.Fatal("expected StartupTasks to fail with failing ping driver")
+	}
+
+	if rec.connectAttempts == 0 {
+		t.Error("expected at least one connect attempt to be recorded")
+	}
+	if rec.connectFailures == 0 {
+		t.Error("expected at least one connect failure to be recorded")
+	}
+}
+
+// countingMetricsRecorder counts metric calls for test assertions.
+type countingMetricsRecorder struct {
+	connectAttempts int
+	connectRetries  int
+	connectSuccess  int
+	connectFailures int
+	healthChecks    int
+}
+
+func (c *countingMetricsRecorder) RecordConnectionPoolStats(*ConnectionPoolStats) {}
+func (c *countingMetricsRecorder) RecordHealthCheck(bool)                         { c.healthChecks++ }
+func (c *countingMetricsRecorder) RecordQuery(time.Duration, error, time.Duration) {}
+func (c *countingMetricsRecorder) RecordTx(time.Duration, bool)                   {}
+func (c *countingMetricsRecorder) IncConnectAttempt()                             { c.connectAttempts++ }
+func (c *countingMetricsRecorder) IncConnectRetry()                               { c.connectRetries++ }
+func (c *countingMetricsRecorder) IncConnectSuccess()                             { c.connectSuccess++ }
+func (c *countingMetricsRecorder) IncConnectFailure()                             { c.connectFailures++ }

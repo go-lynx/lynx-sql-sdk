@@ -80,6 +80,11 @@ func (h *HealthChecker) IsHealthy() bool {
 
 // run performs periodic health checks
 func (h *HealthChecker) run(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("panic in health-check goroutine for %s: %v", h.target.Name(), r)
+		}
+	}()
 	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
 
