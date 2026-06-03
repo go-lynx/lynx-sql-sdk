@@ -50,6 +50,11 @@ func (l *LeakDetector) Stop() {
 
 // run performs periodic leak detection
 func (l *LeakDetector) run(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("panic in leak-detector goroutine for %s: %v", l.target.Name(), r)
+		}
+	}()
 	ticker := time.NewTicker(30 * time.Second) // Check every 30 seconds
 	defer ticker.Stop()
 

@@ -1,3 +1,8 @@
+// Package base provides the production-grade SQL plugin implementation shared by
+// all lynx database plugins (MySQL, PostgreSQL, etc.).  It wraps database/sql with
+// a connection pool, health checking, auto-reconnect, pool monitoring, slow-query
+// detection, connection-leak detection, and a MetricsRecorder interface that
+// individual plugins implement to expose Prometheus metrics.
 package base
 
 import (
@@ -338,11 +343,6 @@ func (p *SQLPlugin) StartupTasks() error {
 	return nil
 }
 
-// connect performs a single connection attempt
-// This method ensures proper resource cleanup on failure
-func (p *SQLPlugin) connect() (*sql.DB, error) {
-	return p.connectWithContext(p.ctx)
-}
 
 func (p *SQLPlugin) connectWithContext(ctx context.Context) (*sql.DB, error) {
 	// Record connection attempt if not retrying
@@ -419,11 +419,6 @@ func (p *SQLPlugin) connectWithContext(ctx context.Context) (*sql.DB, error) {
 	p.lastPingTime.Store(time.Now().Unix())
 
 	return db, nil
-}
-
-// connectWithRetry attempts connection with exponential backoff retry
-func (p *SQLPlugin) connectWithRetry() (*sql.DB, error) {
-	return p.connectWithRetryContext(p.ctx)
 }
 
 func (p *SQLPlugin) connectWithRetryContext(ctx context.Context) (*sql.DB, error) {
@@ -663,11 +658,9 @@ func (p *SQLPlugin) GetAutoReconnector() *AutoReconnector {
 	return p.autoReconnect
 }
 
-// CheckHealth performs a health check. It ensures the database is reachable:
-// if the current connection state is bad or the health query fails (e.g. one
-// stale connection from the pool), it tries Reconnect() once and retries before
-// reporting unhealthy, so a single bad connection does not cause the app to be
-// marked down or stop serving.
+// CheckHealth performs a health check. When auto-reconnect is enabled it may
+// rebuild the pool once on failure. When auto-reconnect is disabled, health
+// checks only report the unhealthy state and never replace the current pool.
 func (p *SQLPlugin) CheckHealth() error {
 	return p.CheckHealthContext(context.Background())
 }
@@ -679,9 +672,11 @@ func (p *SQLPlugin) CheckHealthContext(ctx context.Context) error {
 		query = p.config.HealthCheckQuery
 	}
 
-	// If not connected (e.g. previous Ping marked disconnected due to one bad connection),
-	// try to reconnect once before reporting unhealthy.
 	if !p.IsConnectedContext(ctx) {
+		if !autoReconnectEnabled(p.config) {
+			p.metricsRecorder.RecordHealthCheck(false)
+			return fmt.Errorf("database is not connected")
+		}
 		if err := p.ReconnectContext(ctx); err != nil {
 			p.metricsRecorder.RecordHealthCheck(false)
 			return err
@@ -699,8 +694,11 @@ func (p *SQLPlugin) CheckHealthContext(ctx context.Context) error {
 
 	var result int
 	if err := db.QueryRowContext(healthCtx, query).Scan(&result); err != nil {
-		// Health query failed (e.g. stale connection). Try reconnect once and retry
-		// before reporting unhealthy, so one bad connection does not mark the DB down.
+		if !autoReconnectEnabled(p.config) {
+			p.connected.Store(false)
+			p.metricsRecorder.RecordHealthCheck(false)
+			return fmt.Errorf("health check failed: %w", err)
+		}
 		if reconnectErr := p.ReconnectContext(ctx); reconnectErr != nil {
 			p.metricsRecorder.RecordHealthCheck(false)
 			return fmt.Errorf("health check failed: %w", err)
@@ -750,8 +748,9 @@ func (p *SQLPlugin) IsConnectedContext(ctx context.Context) bool {
 		return true // Use cached result for performance
 	}
 
-	// Perform actual ping check
-	pingCtx, cancel := context.WithTimeout(normalizeContext(ctx), 100*time.Millisecond)
+	// Perform actual ping check. Keep this above typical cross-region/database
+	// pooler latency so health checks do not churn managed DB connections.
+	pingCtx, cancel := context.WithTimeout(normalizeContext(ctx), time.Second)
 	defer cancel()
 
 	if err := db.PingContext(pingCtx); err != nil {
@@ -897,16 +896,12 @@ func normalizeContext(ctx context.Context) context.Context {
 	return context.Background()
 }
 
-// warmupPool pre-establishes connections in the pool
-func (p *SQLPlugin) warmupPool() error {
-	if p.db == nil {
-		return fmt.Errorf("database connection not initialized")
-	}
-
-	return p.ensureMinPoolConnections(context.Background(), p.targetWarmConnections())
-}
-
 func (p *SQLPlugin) maintainMinPoolSize(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("panic in pool warmup goroutine for %s: %v", p.Name(), r)
+		}
+	}()
 	interval := p.minPoolMaintainInterval()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

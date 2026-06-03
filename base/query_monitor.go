@@ -25,7 +25,7 @@ func NewQueryMonitor(enabled bool, threshold time.Duration, recorder MetricsReco
 }
 
 // MonitorQuery wraps a database query with monitoring
-func (m *QueryMonitor) MonitorQuery(ctx context.Context, db *sql.DB, query string, args []interface{}, fn func() error) error {
+func (m *QueryMonitor) MonitorQuery(ctx context.Context, db *sql.DB, query string, args []any, fn func() error) error {
 	if !m.enabled {
 		return fn()
 	}
@@ -49,7 +49,7 @@ func (m *QueryMonitor) MonitorQuery(ctx context.Context, db *sql.DB, query strin
 }
 
 // MonitorQueryRow wraps a database query row with monitoring
-func (m *QueryMonitor) MonitorQueryRow(ctx context.Context, db *sql.DB, query string, args []interface{}, scan func(*sql.Row) error) error {
+func (m *QueryMonitor) MonitorQueryRow(ctx context.Context, db *sql.DB, query string, args []any, scan func(*sql.Row) error) error {
 	if !m.enabled {
 		row := db.QueryRowContext(ctx, query, args...)
 		return scan(row)
@@ -75,7 +75,7 @@ func (m *QueryMonitor) MonitorQueryRow(ctx context.Context, db *sql.DB, query st
 }
 
 // MonitorExec wraps a database exec with monitoring
-func (m *QueryMonitor) MonitorExec(ctx context.Context, db *sql.DB, query string, args []interface{}) (sql.Result, error) {
+func (m *QueryMonitor) MonitorExec(ctx context.Context, db *sql.DB, query string, args []any) (sql.Result, error) {
 	if !m.enabled {
 		return db.ExecContext(ctx, query, args...)
 	}

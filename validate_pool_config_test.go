@@ -1,4 +1,4 @@
-package main
+package sdk_test
 
 import (
 	"fmt"

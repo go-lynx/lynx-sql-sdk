@@ -1,3 +1,8 @@
+// Package interfaces defines the public contracts that all lynx SQL plugins must
+// satisfy.  It contains the SQLPlugin interface that plugins expose to the rest of
+// the application, the DBProvider interface for stable pool handles that survive
+// reconnects, and the shared Config struct that controls connection pool behaviour,
+// health checking, auto-reconnect, warmup, slow-query monitoring and leak detection.
 package interfaces
 
 import (

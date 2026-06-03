@@ -78,6 +78,11 @@ func (m *PoolMonitor) Stop() {
 
 // run performs periodic monitoring
 func (m *PoolMonitor) run(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("panic in pool-monitor goroutine for %s: %v", m.target.Name(), r)
+		}
+	}()
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
 

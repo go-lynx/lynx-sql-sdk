@@ -62,6 +62,11 @@ func (a *AutoReconnector) Stop() {
 
 // run performs periodic connection checks and reconnection
 func (a *AutoReconnector) run(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("panic in auto-reconnect goroutine for %s: %v", a.target.Name(), r)
+		}
+	}()
 	ticker := time.NewTicker(a.interval)
 	defer ticker.Stop()
 
