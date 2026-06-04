@@ -622,8 +622,7 @@ func (p *SQLPlugin) GetValidatedConn(ctx context.Context) (*sql.Conn, error) {
 	return conn, nil
 }
 
-// GetDialect returns the database dialect
-// This method is thread-safe
+// GetDialect returns the database dialect string (e.g. "mysql", "postgres").
 func (p *SQLPlugin) GetDialect() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -721,8 +720,7 @@ func (p *SQLPlugin) CheckHealthContext(ctx context.Context) error {
 	return nil
 }
 
-// IsConnected checks if database is connected
-// This method performs actual connection validation for accuracy
+// IsConnected pings the database to verify the connection is live.
 func (p *SQLPlugin) IsConnected() bool {
 	return p.IsConnectedContext(context.Background())
 }
@@ -764,8 +762,7 @@ func (p *SQLPlugin) IsConnectedContext(ctx context.Context) bool {
 	return true
 }
 
-// GetStats returns connection pool statistics
-// This method is thread-safe and can be called concurrently
+// GetStats returns a snapshot of connection pool statistics.
 func (p *SQLPlugin) GetStats() *ConnectionPoolStats {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -827,8 +824,7 @@ func (p *SQLPlugin) getDialectFromDriver(driver string) string {
 	return driver
 }
 
-// Reconnect attempts to reconnect to the database
-// This method is called by AutoReconnector when connection is lost
+// Reconnect re-establishes the database connection; called by AutoReconnector on failure.
 func (p *SQLPlugin) Reconnect() error {
 	return p.ReconnectContext(p.ctx)
 }
