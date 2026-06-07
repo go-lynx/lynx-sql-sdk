@@ -12,17 +12,23 @@ import (
 type LeakDetector struct {
 	target    Monitorable
 	threshold time.Duration
+	interval  time.Duration
 	mu        sync.Mutex
 	stopChan  chan struct{}
 	stopOnce  sync.Once
 	stopped   bool
 }
 
-// NewLeakDetector creates a new connection leak detector
-func NewLeakDetector(target Monitorable, threshold time.Duration) *LeakDetector {
+// NewLeakDetector creates a new connection leak detector.
+// interval controls how often to check; 0 defaults to 30s.
+func NewLeakDetector(target Monitorable, threshold time.Duration, interval time.Duration) *LeakDetector {
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
 	return &LeakDetector{
 		target:    target,
 		threshold: threshold,
+		interval:  interval,
 		stopChan:  make(chan struct{}),
 	}
 }
@@ -55,7 +61,7 @@ func (l *LeakDetector) run(ctx context.Context) {
 			log.Errorf("panic in leak-detector goroutine for %s: %v", l.target.Name(), r)
 		}
 	}()
-	ticker := time.NewTicker(30 * time.Second) // Check every 30 seconds
+	ticker := time.NewTicker(l.interval)
 	defer ticker.Stop()
 
 	for {
@@ -73,6 +79,9 @@ func (l *LeakDetector) run(ctx context.Context) {
 // detectLeaks checks for potential connection leaks
 func (l *LeakDetector) detectLeaks() {
 	stats := l.target.GetStats()
+	if stats == nil {
+		return // not connected
+	}
 
 	// Check if connections are in use for too long
 	// This is a simplified check - in a real implementation, we'd track individual connections

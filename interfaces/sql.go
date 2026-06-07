@@ -103,6 +103,11 @@ type Config struct {
 	LeakDetectionEnabled   bool `json:"leak_detection_enabled"`   // enable connection leak detection (default: false)
 	LeakDetectionThreshold int  `json:"leak_detection_threshold"` // connection leak threshold in seconds (default: 300)
 
+	// ConnectTimeout is the timeout in seconds for initial connection establishment and health checks (default: 5)
+	ConnectTimeout int `json:"connect_timeout"`
+	// AlertCooldown is the minimum interval in seconds between repeated pool alert logs (default: 60)
+	AlertCooldown int `json:"alert_cooldown"`
+
 	// OpenDBFunc is optional. When set, it is used instead of sql.Open(driver, dsn) to open the DB.
 	// Plugins can use this to inject tracing (e.g. otelsql) when a tracer plugin is present.
 	// Signature: same as sql.Open(driverName, dataSourceName) -> (*sql.DB, error).

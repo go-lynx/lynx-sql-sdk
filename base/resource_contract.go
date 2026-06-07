@@ -1,8 +1,6 @@
 package base
 
 import (
-	"fmt"
-
 	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx/plugins"
@@ -82,11 +80,3 @@ func (p *SQLPlugin) SharedProviderResourceName() string {
 	return p.Name() + sqlSharedProviderSuffix
 }
 
-func (p *SQLPlugin) requireProvider() (interfaces.DBProvider, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if p.provider == nil {
-		return nil, fmt.Errorf("sql plugin %s provider is not configured", p.Name())
-	}
-	return p.provider, nil
-}

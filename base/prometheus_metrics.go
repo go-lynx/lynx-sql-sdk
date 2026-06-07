@@ -15,13 +15,14 @@ type PrometheusMetrics struct {
 	idleConnections    *prometheus.GaugeVec
 	maxIdleConnections *prometheus.GaugeVec
 
-	// Wait metrics
-	waitCount    *prometheus.CounterVec
-	waitDuration *prometheus.CounterVec
+	// Wait metrics — Gauge because db.Stats() returns a running cumulative total;
+	// using Set avoids double-counting on each periodic tick.
+	waitCount    *prometheus.GaugeVec
+	waitDuration *prometheus.GaugeVec
 
-	// Connection close metrics
-	maxIdleClosed     *prometheus.CounterVec
-	maxLifetimeClosed *prometheus.CounterVec
+	// Connection close metrics — same reason as wait metrics above.
+	maxIdleClosed     *prometheus.GaugeVec
+	maxLifetimeClosed *prometheus.GaugeVec
 
 	// Health check metrics
 	healthCheckTotal   *prometheus.CounterVec
@@ -111,44 +112,44 @@ func NewPrometheusMetrics(config *MetricsConfig) *PrometheusMetrics {
 		labels,
 	)
 
-	// Wait metrics
-	metrics.waitCount = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
+	// Wait metrics (Gauge: db.Stats() returns a running cumulative total; Set avoids double-counting)
+	metrics.waitCount = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
 			Namespace: config.Namespace,
 			Subsystem: config.Subsystem,
 			Name:      "wait_count_total",
-			Help:      "The total number of connections waited for",
+			Help:      "The total number of connections waited for (cumulative from db.Stats)",
 		},
 		labels,
 	)
 
-	metrics.waitDuration = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
+	metrics.waitDuration = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
 			Namespace: config.Namespace,
 			Subsystem: config.Subsystem,
 			Name:      "wait_duration_seconds_total",
-			Help:      "The total time blocked waiting for a new connection",
+			Help:      "The total time blocked waiting for a new connection (cumulative from db.Stats)",
 		},
 		labels,
 	)
 
-	// Connection close metrics
-	metrics.maxIdleClosed = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
+	// Connection close metrics (Gauge: cumulative from db.Stats)
+	metrics.maxIdleClosed = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
 			Namespace: config.Namespace,
 			Subsystem: config.Subsystem,
 			Name:      "max_idle_closed_total",
-			Help:      "The total number of connections closed due to SetMaxIdleConns",
+			Help:      "The total number of connections closed due to SetMaxIdleConns (cumulative from db.Stats)",
 		},
 		labels,
 	)
 
-	metrics.maxLifetimeClosed = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
+	metrics.maxLifetimeClosed = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
 			Namespace: config.Namespace,
 			Subsystem: config.Subsystem,
 			Name:      "max_lifetime_closed_total",
-			Help:      "The total number of connections closed due to SetConnMaxLifetime",
+			Help:      "The total number of connections closed due to SetConnMaxLifetime (cumulative from db.Stats)",
 		},
 		labels,
 	)
@@ -312,10 +313,10 @@ func (pm *PrometheusMetrics) RecordConnectionPoolStats(stats *ConnectionPoolStat
 	pm.inUseConnections.With(labels).Set(float64(stats.InUse))
 	pm.idleConnections.With(labels).Set(float64(stats.Idle))
 	pm.maxIdleConnections.With(labels).Set(float64(stats.MaxIdleConnections))
-	pm.waitCount.With(labels).Add(float64(stats.WaitCount))
-	pm.waitDuration.With(labels).Add(stats.WaitDuration.Seconds())
-	pm.maxIdleClosed.With(labels).Add(float64(stats.MaxIdleClosed))
-	pm.maxLifetimeClosed.With(labels).Add(float64(stats.MaxLifetimeClosed))
+	pm.waitCount.With(labels).Set(float64(stats.WaitCount))
+	pm.waitDuration.With(labels).Set(stats.WaitDuration.Seconds())
+	pm.maxIdleClosed.With(labels).Set(float64(stats.MaxIdleClosed))
+	pm.maxLifetimeClosed.With(labels).Set(float64(stats.MaxLifetimeClosed))
 }
 
 // RecordHealthCheck implements MetricsRecorder

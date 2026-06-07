@@ -467,13 +467,14 @@ func TestSQLPlugin_StartupTasks(t *testing.T) {
 }
 
 func TestSQLPlugin_StartupTasksPublishesResourcesWithoutDeadlock(t *testing.T) {
+	falseValue := false
 	config := &interfaces.Config{
-		Driver:                successDriverName,
-		DSN:                   "startup-publish",
-		MaxOpenConns:          10,
-		MaxIdleConns:          5,
-		HealthCheckInterval:   0,
-		AutoReconnectInterval: 0,
+		Driver:               successDriverName,
+		DSN:                  "startup-publish",
+		MaxOpenConns:         10,
+		MaxIdleConns:         5,
+		HealthCheckInterval:  0,
+		AutoReconnectEnabled: &falseValue,
 	}
 
 	plugin := NewBaseSQLPlugin(
@@ -521,13 +522,14 @@ func TestSQLPlugin_StartupTasksPublishesResourcesWithoutDeadlock(t *testing.T) {
 }
 
 func TestSQLPlugin_ReconnectPublishesResourcesWithoutDeadlock(t *testing.T) {
+	falseValue := false
 	config := &interfaces.Config{
-		Driver:                successDriverName,
-		DSN:                   "reconnect-publish",
-		MaxOpenConns:          10,
-		MaxIdleConns:          5,
-		HealthCheckInterval:   0,
-		AutoReconnectInterval: 0,
+		Driver:               successDriverName,
+		DSN:                  "reconnect-publish",
+		MaxOpenConns:         10,
+		MaxIdleConns:         5,
+		HealthCheckInterval:  0,
+		AutoReconnectEnabled: &falseValue,
 	}
 
 	plugin := NewBaseSQLPlugin(
@@ -571,13 +573,14 @@ func TestSQLPlugin_ReconnectPublishesResourcesWithoutDeadlock(t *testing.T) {
 }
 
 func TestSQLPlugin_ReconnectFailurePreservesExistingPool(t *testing.T) {
+	falseValue := false
 	config := &interfaces.Config{
-		Driver:                successDriverName,
-		DSN:                   "reconnect-preserve",
-		MaxOpenConns:          10,
-		MaxIdleConns:          5,
-		HealthCheckInterval:   0,
-		AutoReconnectInterval: 0,
+		Driver:               successDriverName,
+		DSN:                  "reconnect-preserve",
+		MaxOpenConns:         10,
+		MaxIdleConns:         5,
+		HealthCheckInterval:  0,
+		AutoReconnectEnabled: &falseValue,
 	}
 
 	plugin := NewBaseSQLPlugin(
@@ -1008,10 +1011,9 @@ func TestSQLPlugin_GetStats(t *testing.T) {
 		t.Fatalf("InitializeResources failed: %v", err)
 	}
 
-	// Test GetStats before connection
-	stats := plugin.GetStats()
-	if stats.MaxOpenConnections != 0 {
-		t.Error("GetStats should return zero stats before connection")
+	// Test GetStats before connection — nil means not connected
+	if stats := plugin.GetStats(); stats != nil {
+		t.Error("GetStats should return nil before connection")
 	}
 
 	err = plugin.StartupTasks()
@@ -1020,9 +1022,12 @@ func TestSQLPlugin_GetStats(t *testing.T) {
 	}
 
 	// Test GetStats after connection
-	stats = plugin.GetStats()
+	stats := plugin.GetStats()
+	if stats == nil {
+		t.Fatal("GetStats should return non-nil stats after connection")
+	}
 	if stats.MaxOpenConnections == 0 {
-		t.Error("GetStats should return non-zero stats after connection")
+		t.Error("GetStats should return non-zero MaxOpenConnections after connection")
 	}
 
 	// Cleanup
@@ -1573,14 +1578,15 @@ func TestSQLPlugin_ConcurrentInitialization(t *testing.T) {
 // TestSQLPlugin_StartupAndRestart verifies that a plugin can be started, cleaned up,
 // and then re-initialized and started again (simulating a plugin restart).
 func TestSQLPlugin_StartupAndRestart(t *testing.T) {
+	falseValue := false
 	for cycle := range 2 {
 		cfg := &interfaces.Config{
-			Driver:                successDriverName,
-			DSN:                   "restart-test",
-			MaxOpenConns:          5,
-			MaxIdleConns:          2,
-			HealthCheckInterval:   0,
-			AutoReconnectInterval: 0,
+			Driver:               successDriverName,
+			DSN:                  "restart-test",
+			MaxOpenConns:         5,
+			MaxIdleConns:         2,
+			HealthCheckInterval:  0,
+			AutoReconnectEnabled: &falseValue,
 		}
 		rt := &mockRuntime{config: map[string]any{"test.prefix": cfg}}
 		plugin := NewBaseSQLPlugin("id", "test-plugin", "desc", "v1", "test.prefix", 100, cfg)
@@ -1606,13 +1612,14 @@ func TestSQLPlugin_StartupAndRestart(t *testing.T) {
 // TestSQLPlugin_MetricsRecorderCalledOnStartup verifies that connection attempt /
 // success counters are incremented when the plugin connects successfully.
 func TestSQLPlugin_MetricsRecorderCalledOnStartup(t *testing.T) {
+	falseValue := false
 	cfg := &interfaces.Config{
-		Driver:                successDriverName,
-		DSN:                   "metrics-on-startup",
-		MaxOpenConns:          5,
-		MaxIdleConns:          2,
-		HealthCheckInterval:   0,
-		AutoReconnectInterval: 0,
+		Driver:               successDriverName,
+		DSN:                  "metrics-on-startup",
+		MaxOpenConns:         5,
+		MaxIdleConns:         2,
+		HealthCheckInterval:  0,
+		AutoReconnectEnabled: &falseValue,
 	}
 	rt := &mockRuntime{config: map[string]any{"test.prefix": cfg}}
 
@@ -1642,13 +1649,14 @@ func TestSQLPlugin_MetricsRecorderCalledOnStartup(t *testing.T) {
 // TestSQLPlugin_MetricsRecorderCalledOnFailedConnect verifies that the connect
 // failure counter is incremented when the plugin cannot connect.
 func TestSQLPlugin_MetricsRecorderCalledOnFailedConnect(t *testing.T) {
+	falseValue := false
 	cfg := &interfaces.Config{
-		Driver:                failingPingDriverName,
-		DSN:                   "metrics-on-failure",
-		MaxOpenConns:          5,
-		MaxIdleConns:          2,
-		HealthCheckInterval:   0,
-		AutoReconnectInterval: 0,
+		Driver:               failingPingDriverName,
+		DSN:                  "metrics-on-failure",
+		MaxOpenConns:         5,
+		MaxIdleConns:         2,
+		HealthCheckInterval:  0,
+		AutoReconnectEnabled: &falseValue,
 	}
 	rt := &mockRuntime{config: map[string]any{"test.prefix": cfg}}
 

@@ -31,6 +31,7 @@ const (
 	minPoolMaintainMaxInterval        = 30 * time.Second
 	minPoolConnectionWarmupTimeout    = 15 * time.Second
 	minPoolSingleConnectionPingWindow = 2 * time.Second
+	poolStatsReportInterval           = 15 * time.Second
 )
 
 // ConnectionPoolStats represents database connection pool statistics
@@ -78,7 +79,7 @@ type SQLPlugin struct {
 	// Connection leak detector
 	leakDetector *LeakDetector
 
-	// Query monitor for slow query detection
+	// Query monitor for slow query detection (opt-in via GetQueryMonitor)
 	queryMonitor *QueryMonitor
 
 	// Metrics recording
@@ -110,16 +111,28 @@ func NewBaseSQLPlugin(
 	}
 }
 
-// InitializeResources initializes plugin resources
+// InitializeResources loads config via Scan then applies defaults and validates.
 func (p *SQLPlugin) InitializeResources(rt plugins.Runtime) error {
 	p.bindRuntime(rt)
 
-	// Load configuration
 	if err := rt.GetConfig().Value(p.confPrefix).Scan(p.config); err != nil {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
-	// Set default values
+	return p.applyDefaultsAndValidate()
+}
+
+// InitializeFromConfig binds the runtime and applies defaults/validation without
+// re-scanning the config source. Use this when the config has already been fully
+// populated by a plugin-specific loader (e.g. lynx-pgsql populates interfaces.Config
+// from its own proto config before calling base).
+func (p *SQLPlugin) InitializeFromConfig(rt plugins.Runtime) error {
+	p.bindRuntime(rt)
+	return p.applyDefaultsAndValidate()
+}
+
+// applyDefaultsAndValidate fills in missing defaults and validates the config.
+func (p *SQLPlugin) applyDefaultsAndValidate() error {
 	if p.config.MaxOpenConns == 0 {
 		p.config.MaxOpenConns = 25
 	}
@@ -127,7 +140,6 @@ func (p *SQLPlugin) InitializeResources(rt plugins.Runtime) error {
 		p.config.MaxIdleConns = 5
 	}
 
-	// Set default retry values
 	if p.config.RetryMaxAttempts == 0 {
 		p.config.RetryMaxAttempts = 3
 	}
@@ -141,7 +153,6 @@ func (p *SQLPlugin) InitializeResources(rt plugins.Runtime) error {
 		p.config.RetryMultiplier = 2.0
 	}
 
-	// Set default monitoring values
 	if p.config.MonitorInterval == 0 {
 		p.config.MonitorInterval = 30
 	}
@@ -155,16 +166,12 @@ func (p *SQLPlugin) InitializeResources(rt plugins.Runtime) error {
 		p.config.AlertThresholdWaitCount = 10
 	}
 
-	// Set default auto-reconnect values
-	// Auto-reconnect is enabled by default for production readiness
-	// Default interval to 5 seconds if not set
-	// User can disable by setting auto_reconnect_enabled: false
+	// Auto-reconnect is enabled by default for production readiness.
+	// interval=0 means "use default interval (5s)"; to disable, set auto_reconnect_enabled: false.
 	if p.config.AutoReconnectInterval == 0 {
-		p.config.AutoReconnectInterval = 5 // Default 5 seconds
+		p.config.AutoReconnectInterval = 5
 	}
-	// 0 means unlimited attempts for max_attempts
 
-	// Set default warmup values
 	if p.config.WarmupConns == 0 {
 		p.config.WarmupConns = p.config.MaxIdleConns
 		if p.config.WarmupConns == 0 {
@@ -172,22 +179,22 @@ func (p *SQLPlugin) InitializeResources(rt plugins.Runtime) error {
 		}
 	}
 
-	// Set default slow query threshold
 	if p.config.SlowQueryThreshold == 0 {
 		p.config.SlowQueryThreshold = 1000 // 1 second
 	}
 
-	// Set default leak detection threshold
 	if p.config.LeakDetectionThreshold == 0 {
 		p.config.LeakDetectionThreshold = 300 // 5 minutes
 	}
 
-	// Validate configuration
-	if err := p.validateConfig(); err != nil {
-		return fmt.Errorf("configuration validation failed: %w", err)
+	if p.config.ConnectTimeout == 0 {
+		p.config.ConnectTimeout = 5
+	}
+	if p.config.AlertCooldown == 0 {
+		p.config.AlertCooldown = 60
 	}
 
-	return nil
+	return p.validateConfig()
 }
 
 // validateConfig validates the configuration for correctness
@@ -216,6 +223,12 @@ func (p *SQLPlugin) validateConfig() error {
 	}
 	if p.config.AutoReconnectInterval < 0 {
 		return fmt.Errorf("auto_reconnect_interval cannot be negative")
+	}
+	if p.config.ConnectTimeout < 0 {
+		return fmt.Errorf("connect_timeout cannot be negative")
+	}
+	if p.config.AlertCooldown < 0 {
+		return fmt.Errorf("alert_cooldown cannot be negative")
 	}
 	if p.config.AutoReconnectMaxAttempts < 0 {
 		return fmt.Errorf("auto_reconnect_max_attempts cannot be negative")
@@ -246,7 +259,6 @@ func (p *SQLPlugin) StartupTasks() error {
 
 	log.Infof("Initializing database connection for %s", p.Name())
 
-	// Attempt connection with retry if enabled
 	var db *sql.DB
 	var err error
 
@@ -269,13 +281,13 @@ func (p *SQLPlugin) StartupTasks() error {
 	p.mu.Unlock()
 
 	// Warmup/maintain the pool asynchronously so plugin startup never blocks on
-	// creating multiple idle connections. This is important for managed databases
-	// or poolers where opening several connections may exceed the plugin startup timeout.
+	// creating multiple idle connections.
 	if p.config.WarmupEnabled {
 		go p.maintainMinPoolSize(p.ctx)
 	}
 
-	// Start health checker if configured
+	// Start health checker if configured.
+	// Health checker only reports health state; AutoReconnector handles recovery.
 	if p.config.HealthCheckInterval > 0 {
 		p.healthChecker = NewHealthChecker(
 			p,
@@ -291,6 +303,7 @@ func (p *SQLPlugin) StartupTasks() error {
 			UsagePercentage: p.config.AlertThresholdUsage,
 			WaitDuration:    time.Duration(p.config.AlertThresholdWait) * time.Second,
 			WaitCount:       p.config.AlertThresholdWaitCount,
+			AlertCooldown:   time.Duration(p.config.AlertCooldown) * time.Second,
 		}
 		p.poolMonitor = NewPoolMonitor(
 			p,
@@ -300,11 +313,8 @@ func (p *SQLPlugin) StartupTasks() error {
 		p.poolMonitor.Start(p.ctx)
 	}
 
-	// Start auto-reconnect if enabled
-	// Enable by default for production readiness (interval defaults to 5)
-	// User can disable by explicitly setting auto_reconnect_enabled: false
-	// Note: Since Go bool zero value is false, we can't distinguish "not set" from "explicitly false"
-	// So we enable by default (production best practice) - user must explicitly disable
+	// Start auto-reconnect if enabled.
+	// auto_reconnect_enabled: false is the only way to opt out.
 	if autoReconnectEnabled(p.config) {
 		p.autoReconnect = NewAutoReconnector(
 			p,
@@ -325,11 +335,12 @@ func (p *SQLPlugin) StartupTasks() error {
 		p.leakDetector = NewLeakDetector(
 			p,
 			time.Duration(p.config.LeakDetectionThreshold)*time.Second,
+			time.Duration(p.config.MonitorInterval)*time.Second,
 		)
 		p.leakDetector.Start(p.ctx)
 	}
 
-	// Initialize query monitor if enabled
+	// Initialize query monitor if enabled (opt-in via GetQueryMonitor)
 	if p.config.SlowQueryEnabled {
 		p.queryMonitor = NewQueryMonitor(
 			true,
@@ -338,11 +349,38 @@ func (p *SQLPlugin) StartupTasks() error {
 		)
 	}
 
+	// Start periodic pool stats reporter so MetricsRecorder.RecordConnectionPoolStats
+	// is called regularly and pool gauges stay current.
+	p.startPoolStatsReporter(p.ctx)
+
 	log.Infof("Database connection established for %s", p.Name())
 	p.publishResourceContract()
 	return nil
 }
 
+// startPoolStatsReporter periodically calls metricsRecorder.RecordConnectionPoolStats.
+func (p *SQLPlugin) startPoolStatsReporter(ctx context.Context) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorf("panic in pool-stats-reporter for %s: %v", p.Name(), r)
+			}
+		}()
+		ticker := time.NewTicker(poolStatsReportInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				stats := p.GetStats()
+				if stats != nil {
+					p.metricsRecorder.RecordConnectionPoolStats(stats)
+				}
+			}
+		}
+	}()
+}
 
 func (p *SQLPlugin) connectWithContext(ctx context.Context) (*sql.DB, error) {
 	// Record connection attempt if not retrying
@@ -352,7 +390,6 @@ func (p *SQLPlugin) connectWithContext(ctx context.Context) (*sql.DB, error) {
 
 	ctx = normalizeContext(ctx)
 
-	// Open database connection (use optional OpenDBFunc when set, e.g. for tracing)
 	var db *sql.DB
 	var err error
 	if p.config.OpenDBFunc != nil {
@@ -367,7 +404,6 @@ func (p *SQLPlugin) connectWithContext(ctx context.Context) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Configure connection pool before testing connection
 	db.SetMaxOpenConns(p.config.MaxOpenConns)
 	db.SetMaxIdleConns(p.config.MaxIdleConns)
 
@@ -379,11 +415,10 @@ func (p *SQLPlugin) connectWithContext(ctx context.Context) (*sql.DB, error) {
 	}
 
 	// Test connection with timeout (ping + execute SQL to ensure full path works)
-	connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	connectCtx, cancel := context.WithTimeout(ctx, time.Duration(p.config.ConnectTimeout)*time.Second)
 	defer cancel()
 
 	if err := db.PingContext(connectCtx); err != nil {
-		// Ensure we close the db on ping failure to prevent resource leaks
 		closeErr := db.Close()
 		if closeErr != nil {
 			log.Warnf("Error closing database connection after ping failure: %v", closeErr)
@@ -415,7 +450,6 @@ func (p *SQLPlugin) connectWithContext(ctx context.Context) (*sql.DB, error) {
 		p.metricsRecorder.IncConnectSuccess()
 	}
 
-	// Update last ping time on successful connection
 	p.lastPingTime.Store(time.Now().Unix())
 
 	return db, nil
@@ -429,7 +463,6 @@ func (p *SQLPlugin) connectWithRetryContext(ctx context.Context) (*sql.DB, error
 	p.metricsRecorder.IncConnectAttempt()
 
 	for attempt := 0; attempt <= p.config.RetryMaxAttempts; attempt++ {
-		// Check if context is cancelled before retrying
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("connection cancelled: %w", ctx.Err())
@@ -441,7 +474,6 @@ func (p *SQLPlugin) connectWithRetryContext(ctx context.Context) (*sql.DB, error
 				p.Name(), attempt, p.config.RetryMaxAttempts, delay)
 			p.metricsRecorder.IncConnectRetry()
 
-			// Use select with context to allow cancellation during sleep
 			retryTimer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
@@ -462,7 +494,6 @@ func (p *SQLPlugin) connectWithRetryContext(ctx context.Context) (*sql.DB, error
 
 		lastErr = err
 
-		// Calculate next delay with exponential backoff
 		delay = time.Duration(float64(delay) * p.config.RetryMultiplier)
 		maxDelay := time.Duration(p.config.RetryMaxDelay) * time.Second
 		if delay > maxDelay {
@@ -484,30 +515,23 @@ func (p *SQLPlugin) CleanupTasks() error {
 
 	log.Infof("Shutting down database connection for %s", p.Name())
 
-	// Stop background tasks
+	// Cancel context — stops all background goroutines (health checker, pool monitor,
+	// auto-reconnect, leak detector, pool stats reporter).
 	p.cancel()
 
-	// Stop health checker
 	if p.healthChecker != nil {
 		p.healthChecker.Stop()
 	}
-
-	// Stop pool monitor
 	if p.poolMonitor != nil {
 		p.poolMonitor.Stop()
 	}
-
-	// Stop auto-reconnect
 	if p.autoReconnect != nil {
 		p.autoReconnect.Stop()
 	}
-
-	// Stop leak detector
 	if p.leakDetector != nil {
 		p.leakDetector.Stop()
 	}
 
-	// Close database connection
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -549,7 +573,6 @@ func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 		}
 	}
 
-	// Check if context is cancelled
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -567,7 +590,6 @@ func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 		err := db.PingContext(pingCtx)
 		pingCancel()
 		if err != nil {
-			// Pool is broken or has no healthy connection; replace pool so we never hand out a closed db
 			if reconnectErr := p.ReconnectContext(ctx); reconnectErr != nil {
 				return nil, fmt.Errorf("pool unhealthy and reconnect failed: %w", err)
 			}
@@ -643,7 +665,9 @@ func (p *SQLPlugin) GetMetricsRecorder() MetricsRecorder {
 	return p.metricsRecorder
 }
 
-// GetQueryMonitor returns the query monitor for slow query detection
+// GetQueryMonitor returns the query monitor for opt-in slow query detection.
+// Callers wrap their queries with monitor.MonitorQuery() to record duration and
+// detect slow queries. Returns nil when SlowQueryEnabled is false.
 func (p *SQLPlugin) GetQueryMonitor() *QueryMonitor {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -655,6 +679,45 @@ func (p *SQLPlugin) GetAutoReconnector() *AutoReconnector {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.autoReconnect
+}
+
+// ReportHealth performs a health check without triggering reconnect.
+// It is called by HealthChecker; recovery is handled exclusively by AutoReconnector.
+func (p *SQLPlugin) ReportHealth() error {
+	p.mu.RLock()
+	db := p.db
+	recorder := p.metricsRecorder
+	p.mu.RUnlock()
+
+	if db == nil || !p.connected.Load() || p.closing.Load() {
+		if recorder != nil {
+			recorder.RecordHealthCheck(false)
+		}
+		return fmt.Errorf("database not connected")
+	}
+
+	query := "SELECT 1"
+	if p.config.HealthCheckQuery != "" {
+		query = p.config.HealthCheckQuery
+	}
+
+	ctx, cancel := context.WithTimeout(p.ctx, time.Duration(p.config.ConnectTimeout)*time.Second)
+	defer cancel()
+
+	var result int
+	if err := db.QueryRowContext(ctx, query).Scan(&result); err != nil {
+		p.connected.Store(false)
+		if recorder != nil {
+			recorder.RecordHealthCheck(false)
+		}
+		return err
+	}
+
+	if recorder != nil {
+		recorder.RecordHealthCheck(true)
+	}
+	p.lastPingTime.Store(time.Now().Unix())
+	return nil
 }
 
 // CheckHealth performs a health check. When auto-reconnect is enabled it may
@@ -670,6 +733,7 @@ func (p *SQLPlugin) CheckHealthContext(ctx context.Context) error {
 	if p.config.HealthCheckQuery != "" {
 		query = p.config.HealthCheckQuery
 	}
+	timeout := time.Duration(p.config.ConnectTimeout) * time.Second
 
 	if !p.IsConnectedContext(ctx) {
 		if !autoReconnectEnabled(p.config) {
@@ -682,13 +746,17 @@ func (p *SQLPlugin) CheckHealthContext(ctx context.Context) error {
 		}
 	}
 
-	db, err := p.GetDBWithContext(ctx)
-	if err != nil {
+	// Read db directly to avoid GetDBWithContext triggering a second reconnect
+	// attempt (it would re-check IsConnectedContext and call ReconnectContext again).
+	p.mu.RLock()
+	db := p.db
+	p.mu.RUnlock()
+	if db == nil {
 		p.metricsRecorder.RecordHealthCheck(false)
-		return err
+		return fmt.Errorf("database not connected")
 	}
 
-	healthCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	healthCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var result int
@@ -702,14 +770,16 @@ func (p *SQLPlugin) CheckHealthContext(ctx context.Context) error {
 			p.metricsRecorder.RecordHealthCheck(false)
 			return fmt.Errorf("health check failed: %w", err)
 		}
-		db, err = p.GetDBWithContext(ctx)
-		if err != nil {
+		p.mu.RLock()
+		db = p.db
+		p.mu.RUnlock()
+		if db == nil {
 			p.metricsRecorder.RecordHealthCheck(false)
-			return err
+			return fmt.Errorf("database not connected after reconnect")
 		}
-		ctx2, cancel2 := context.WithTimeout(ctx, 5*time.Second)
+		healthCtx2, cancel2 := context.WithTimeout(ctx, timeout)
 		defer cancel2()
-		if err2 := db.QueryRowContext(ctx2, query).Scan(&result); err2 != nil {
+		if err2 := db.QueryRowContext(healthCtx2, query).Scan(&result); err2 != nil {
 			p.metricsRecorder.RecordHealthCheck(false)
 			return fmt.Errorf("health check failed after reconnect: %w", err2)
 		}
@@ -738,43 +808,39 @@ func (p *SQLPlugin) IsConnectedContext(ctx context.Context) bool {
 		return false
 	}
 
-	// Perform quick ping check with short timeout
 	// Use cached ping result if recent (within last 5 seconds)
 	lastPing := p.lastPingTime.Load()
 	now := time.Now().Unix()
 	if now-lastPing < int64(connectionValidationCacheWindow/time.Second) {
-		return true // Use cached result for performance
+		return true
 	}
 
-	// Perform actual ping check. Keep this above typical cross-region/database
-	// pooler latency so health checks do not churn managed DB connections.
 	pingCtx, cancel := context.WithTimeout(normalizeContext(ctx), time.Second)
 	defer cancel()
 
 	if err := db.PingContext(pingCtx); err != nil {
-		// Connection is actually down, update state
 		p.connected.Store(false)
 		return false
 	}
 
-	// Update last ping time
 	p.lastPingTime.Store(now)
 	return true
 }
 
 // GetStats returns a snapshot of connection pool statistics.
+// Returns nil when the plugin is not connected or is shutting down.
 func (p *SQLPlugin) GetStats() *ConnectionPoolStats {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	if !p.connected.Load() || p.closing.Load() || p.db == nil {
-		return &ConnectionPoolStats{}
+		return nil
 	}
 
 	stats := p.db.Stats()
 	maxIdleConns := int64(p.config.MaxIdleConns)
 	if maxIdleConns == 0 {
-		maxIdleConns = 5 // Default value
+		maxIdleConns = 5
 	}
 
 	return &ConnectionPoolStats{
@@ -805,7 +871,6 @@ func (p *SQLPlugin) shouldPingBeforeHandout() bool {
 	return time.Now().Unix()-lastPing >= int64(connectionValidationCacheWindow/time.Second)
 }
 
-// getDialectFromDriver determines the dialect from the driver name
 func (p *SQLPlugin) getDialectFromDriver(driver string) string {
 	dialectMap := map[string]string{
 		"mysql":      "mysql",
@@ -846,23 +911,18 @@ func (p *SQLPlugin) ReconnectContext(ctx context.Context) error {
 
 	log.Debugf("Attempting to reconnect database for %s", p.Name())
 
-	// Keep the old pool until the replacement has been opened and verified.
-	// This avoids turning a failed reconnect attempt into an immediate resource drop.
+	// Keep old pool until replacement is verified — avoids turning a failed
+	// reconnect attempt into an immediate resource drop.
 	oldDB := p.db
 	p.connected.Store(false)
 	p.mu.Unlock()
 
-	// Attempt to reconnect
-	// Note: connect() and connectWithRetry() use p.ctx for timeouts
-	// p.ctx should still be valid during reconnection (only cancelled on plugin shutdown)
 	var db *sql.DB
 	var err error
 
 	if p.config.RetryEnabled {
-		// Use retry mechanism for reconnection
 		db, err = p.connectWithRetryContext(ctx)
 	} else {
-		// Single attempt
 		db, err = p.connectWithContext(ctx)
 	}
 
@@ -870,7 +930,6 @@ func (p *SQLPlugin) ReconnectContext(ctx context.Context) error {
 		return fmt.Errorf("reconnection failed: %w", err)
 	}
 
-	// Update connection state
 	p.mu.Lock()
 	p.db = db
 	p.connected.Store(true)

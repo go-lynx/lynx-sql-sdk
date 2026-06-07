@@ -25,9 +25,10 @@ type PoolMonitor struct {
 
 // PoolThresholds defines alert thresholds for connection pool monitoring
 type PoolThresholds struct {
-	UsagePercentage float64 // Alert when pool usage exceeds this (0.0-1.0)
+	UsagePercentage float64       // Alert when pool usage exceeds this (0.0-1.0)
 	WaitDuration    time.Duration // Alert when wait duration exceeds this
-	WaitCount       int64   // Alert when wait count exceeds this
+	WaitCount       int64         // Alert when wait count exceeds this
+	AlertCooldown   time.Duration // Minimum time between alerts; 0 = default (60s)
 }
 
 // Monitorable interface for components that can be monitored
@@ -46,11 +47,15 @@ func NewPoolMonitor(target Monitorable, interval time.Duration, thresholds *Pool
 		}
 	}
 
+	cooldown := 60 * time.Second
+	if thresholds.AlertCooldown > 0 {
+		cooldown = thresholds.AlertCooldown
+	}
 	return &PoolMonitor{
 		target:        target,
 		interval:      interval,
 		thresholds:    thresholds,
-		alertCooldown: 60 * time.Second, // 1 minute cooldown between alerts
+		alertCooldown: cooldown,
 		stopChan:      make(chan struct{}),
 	}
 }
@@ -101,6 +106,9 @@ func (m *PoolMonitor) run(ctx context.Context) {
 // checkAndAlert checks pool stats and triggers alerts if thresholds are exceeded
 func (m *PoolMonitor) checkAndAlert() {
 	stats := m.target.GetStats()
+	if stats == nil {
+		return // not connected
+	}
 
 	alerts := []string{}
 	severity := "warning"

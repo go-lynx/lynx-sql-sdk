@@ -8,44 +8,39 @@ import (
 	"github.com/go-lynx/lynx/log"
 )
 
-// HealthCheckable interface for health checkable components
-type HealthCheckable interface {
-	CheckHealth() error
+// HealthReporter is implemented by database plugins to expose a no-reconnect health
+// probe for the HealthChecker. Unlike CheckHealth, ReportHealth never triggers
+// reconnection — it only marks the connection as unhealthy when a query fails.
+type HealthReporter interface {
+	ReportHealth() error
 	Name() string
 }
 
-// Recoverable interface for components that can recover from failures
-type Recoverable interface {
-	Reconnect() error
-	IsConnected() bool
-}
-
-// HealthChecker performs periodic health checks
+// HealthChecker performs periodic health checks and updates isHealthy.
+// It only reports health state — recovery (Reconnect) is handled exclusively
+// by AutoReconnector to avoid redundant concurrent reconnect attempts.
 type HealthChecker struct {
-	target      HealthCheckable
+	target      HealthReporter
 	interval    time.Duration
 	customQuery string
 
 	mu           sync.Mutex
 	lastCheck    time.Time
 	isHealthy    bool
-	failureCount int64 // Count of consecutive failures
-	maxFailures  int64 // Max failures before attempting recovery
+	failureCount int64
 
 	stopChan chan struct{}
-	stopOnce sync.Once // Protect against multiple close operations
+	stopOnce sync.Once
 	stopped  bool
 }
 
 // NewHealthChecker creates a new health checker.
-// Recovery (Reconnect) is attempted on first failure so the pool is replaced as soon as it is unhealthy.
-func NewHealthChecker(target HealthCheckable, interval time.Duration, customQuery string) *HealthChecker {
+func NewHealthChecker(target HealthReporter, interval time.Duration, customQuery string) *HealthChecker {
 	return &HealthChecker{
 		target:      target,
 		interval:    interval,
 		customQuery: customQuery,
 		isHealthy:   true,
-		maxFailures: 1, // Reconnect on first failure so pool never hands out dead connections for long
 		stopChan:    make(chan struct{}),
 	}
 }
@@ -91,7 +86,7 @@ func (h *HealthChecker) run(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			h.performHealthCheck(ctx)
+			h.performHealthCheck()
 		case <-h.stopChan:
 			return
 		case <-ctx.Done():
@@ -100,9 +95,11 @@ func (h *HealthChecker) run(ctx context.Context) {
 	}
 }
 
-// performHealthCheck performs a single health check
-func (h *HealthChecker) performHealthCheck(ctx context.Context) {
-	err := h.target.CheckHealth()
+// performHealthCheck performs a single health check and updates isHealthy.
+// Recovery is intentionally not attempted here; AutoReconnector polls
+// IsConnected() independently and calls Reconnect() when needed.
+func (h *HealthChecker) performHealthCheck() {
+	err := h.target.ReportHealth()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -111,42 +108,15 @@ func (h *HealthChecker) performHealthCheck(ctx context.Context) {
 
 	if err != nil {
 		h.failureCount++
-
-		// Only log on state transition from healthy to unhealthy to avoid log spam
 		if h.isHealthy {
 			log.Errorf("Health check failed for %s: %v", h.target.Name(), err)
 		}
 		h.isHealthy = false
-
-		// Attempt automatic recovery after consecutive failures
-		if h.failureCount >= h.maxFailures {
-			// Try to recover by reconnecting
-			if recoverable, ok := h.target.(Recoverable); ok {
-				log.Infof("Attempting automatic recovery for %s after %d consecutive failures",
-					h.target.Name(), h.failureCount)
-
-				// Release lock before reconnecting to avoid deadlock
-				h.mu.Unlock()
-				reconnectErr := recoverable.Reconnect()
-				h.mu.Lock()
-
-				if reconnectErr == nil {
-					log.Infof("Automatic recovery successful for %s", h.target.Name())
-					h.failureCount = 0
-					h.isHealthy = true
-				} else {
-					log.Warnf("Automatic recovery failed for %s: %v", h.target.Name(), reconnectErr)
-				}
-			}
-		}
 	} else {
-		// Reset failure count on success
-		h.failureCount = 0
-
-		// Only log on state transition from unhealthy to healthy to avoid log spam
 		if !h.isHealthy {
 			log.Infof("Health check recovered for %s", h.target.Name())
 		}
+		h.failureCount = 0
 		h.isHealthy = true
 	}
 }
