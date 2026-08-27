@@ -1690,11 +1690,11 @@ type countingMetricsRecorder struct {
 	healthChecks    int
 }
 
-func (c *countingMetricsRecorder) RecordConnectionPoolStats(*ConnectionPoolStats) {}
-func (c *countingMetricsRecorder) RecordHealthCheck(bool)                         { c.healthChecks++ }
+func (c *countingMetricsRecorder) RecordConnectionPoolStats(*ConnectionPoolStats)  {}
+func (c *countingMetricsRecorder) RecordHealthCheck(bool)                          { c.healthChecks++ }
 func (c *countingMetricsRecorder) RecordQuery(time.Duration, error, time.Duration) {}
-func (c *countingMetricsRecorder) RecordTx(time.Duration, bool)                   {}
-func (c *countingMetricsRecorder) IncConnectAttempt()                             { c.connectAttempts++ }
-func (c *countingMetricsRecorder) IncConnectRetry()                               { c.connectRetries++ }
-func (c *countingMetricsRecorder) IncConnectSuccess()                             { c.connectSuccess++ }
-func (c *countingMetricsRecorder) IncConnectFailure()                             { c.connectFailures++ }
+func (c *countingMetricsRecorder) RecordTx(time.Duration, bool)                    {}
+func (c *countingMetricsRecorder) IncConnectAttempt()                              { c.connectAttempts++ }
+func (c *countingMetricsRecorder) IncConnectRetry()                                { c.connectRetries++ }
+func (c *countingMetricsRecorder) IncConnectSuccess()                              { c.connectSuccess++ }
+func (c *countingMetricsRecorder) IncConnectFailure()                              { c.connectFailures++ }

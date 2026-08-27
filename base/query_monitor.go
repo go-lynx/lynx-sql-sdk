@@ -97,4 +97,3 @@ func (m *QueryMonitor) MonitorExec(ctx context.Context, db *sql.DB, query string
 
 	return result, err
 }
-

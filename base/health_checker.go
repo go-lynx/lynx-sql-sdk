@@ -27,11 +27,12 @@ type HealthChecker struct {
 	mu           sync.Mutex
 	lastCheck    time.Time
 	isHealthy    bool
-	failureCount int64
+	failureCount int64 // Count of consecutive failures
 
 	stopChan chan struct{}
 	stopOnce sync.Once
 	stopped  bool
+	wg       sync.WaitGroup
 }
 
 // NewHealthChecker creates a new health checker.
@@ -47,7 +48,11 @@ func NewHealthChecker(target HealthReporter, interval time.Duration, customQuery
 
 // Start starts the health check routine
 func (h *HealthChecker) Start(ctx context.Context) {
-	go h.run(ctx)
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		h.run(ctx)
+	}()
 }
 
 // Stop stops the health checker
@@ -64,6 +69,7 @@ func (h *HealthChecker) Stop() {
 			h.mu.Unlock()
 		})
 	}
+	h.wg.Wait()
 }
 
 // IsHealthy returns the current health status
@@ -112,11 +118,15 @@ func (h *HealthChecker) performHealthCheck() {
 			log.Errorf("Health check failed for %s: %v", h.target.Name(), err)
 		}
 		h.isHealthy = false
-	} else {
-		if !h.isHealthy {
-			log.Infof("Health check recovered for %s", h.target.Name())
-		}
-		h.failureCount = 0
-		h.isHealthy = true
+		return
 	}
+
+	// Reset failure count on success
+	h.failureCount = 0
+
+	// Only log on state transition from unhealthy to healthy to avoid log spam
+	if !h.isHealthy {
+		log.Infof("Health check recovered for %s", h.target.Name())
+	}
+	h.isHealthy = true
 }

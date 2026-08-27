@@ -2,6 +2,7 @@ package base
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -17,6 +18,11 @@ type LeakDetector struct {
 	stopChan  chan struct{}
 	stopOnce  sync.Once
 	stopped   bool
+	wg        sync.WaitGroup
+
+	// Cumulative wait duration observed at the previous sample; used to compute
+	// the per-interval delta instead of comparing the lifetime total.
+	lastWaitDuration time.Duration
 }
 
 // NewLeakDetector creates a new connection leak detector.
@@ -35,7 +41,11 @@ func NewLeakDetector(target Monitorable, threshold time.Duration, interval time.
 
 // Start starts the leak detection routine
 func (l *LeakDetector) Start(ctx context.Context) {
-	go l.run(ctx)
+	l.wg.Add(1)
+	go func() {
+		defer l.wg.Done()
+		l.run(ctx)
+	}()
 }
 
 // Stop stops the leak detector
@@ -52,6 +62,7 @@ func (l *LeakDetector) Stop() {
 			l.mu.Unlock()
 		})
 	}
+	l.wg.Wait()
 }
 
 // run performs periodic leak detection
@@ -78,10 +89,29 @@ func (l *LeakDetector) run(ctx context.Context) {
 
 // detectLeaks checks for potential connection leaks
 func (l *LeakDetector) detectLeaks() {
-	stats := l.target.GetStats()
-	if stats == nil {
-		return // not connected
+	for _, msg := range l.evaluate(l.target.GetStats()) {
+		log.Warnf("%s", msg)
 	}
+}
+
+// evaluate inspects a stats sample and returns leak warnings, if any.
+// WaitDuration in sql.DBStats is cumulative for the lifetime of the pool, so the
+// check uses the delta since the previous sample (per-interval wait duration).
+func (l *LeakDetector) evaluate(stats *ConnectionPoolStats) []string {
+	if stats == nil {
+		return nil
+	}
+
+	l.mu.Lock()
+	waitDelta := stats.WaitDuration - l.lastWaitDuration
+	if waitDelta < 0 {
+		// Pool was replaced (e.g. reconnect) and counters reset.
+		waitDelta = stats.WaitDuration
+	}
+	l.lastWaitDuration = stats.WaitDuration
+	l.mu.Unlock()
+
+	var warnings []string
 
 	// Check if connections are in use for too long
 	// This is a simplified check - in a real implementation, we'd track individual connections
@@ -91,16 +121,16 @@ func (l *LeakDetector) detectLeaks() {
 			usage := float64(stats.OpenConnections) / float64(stats.MaxOpenConnections)
 			if usage >= 0.9 && stats.InUse == stats.OpenConnections {
 				// All connections are in use, potential leak
-				log.Warnf("Potential connection leak detected for %s: all connections (%d/%d) are in use",
-					l.target.Name(), stats.OpenConnections, stats.MaxOpenConnections)
+				warnings = append(warnings, fmt.Sprintf("Potential connection leak detected for %s: all connections (%d/%d) are in use",
+					l.target.Name(), stats.OpenConnections, stats.MaxOpenConnections))
 			}
 		}
 
-		// Check wait duration - long waits might indicate leaks
-		if stats.WaitDuration > l.threshold {
-			log.Warnf("Long connection wait detected for %s: %v (threshold: %v). Possible connection leak.",
-				l.target.Name(), stats.WaitDuration, l.threshold)
+		// Check wait duration accumulated during the last interval - long waits might indicate leaks
+		if waitDelta > l.threshold {
+			warnings = append(warnings, fmt.Sprintf("Long connection wait detected for %s: %v in last interval (threshold: %v). Possible connection leak.",
+				l.target.Name(), waitDelta, l.threshold))
 		}
 	}
+	return warnings
 }
-

@@ -18,15 +18,16 @@ type Reconnectable interface {
 
 // AutoReconnector performs automatic reconnection on connection loss
 type AutoReconnector struct {
-	target      Reconnectable
-	interval    time.Duration
-	maxAttempts int
-	mu          sync.Mutex
-	attempts    int64
+	target       Reconnectable
+	interval     time.Duration
+	maxAttempts  int
+	mu           sync.Mutex
+	attempts     int64
 	reconnecting atomic.Bool
-	stopChan    chan struct{}
-	stopOnce    sync.Once
-	stopped     bool
+	stopChan     chan struct{}
+	stopOnce     sync.Once
+	stopped      bool
+	wg           sync.WaitGroup
 }
 
 // NewAutoReconnector creates a new auto-reconnector
@@ -41,7 +42,11 @@ func NewAutoReconnector(target Reconnectable, interval time.Duration, maxAttempt
 
 // Start starts the auto-reconnect routine
 func (a *AutoReconnector) Start(ctx context.Context) {
-	go a.run(ctx)
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.run(ctx)
+	}()
 }
 
 // Stop stops the auto-reconnector
@@ -58,6 +63,7 @@ func (a *AutoReconnector) Stop() {
 			a.mu.Unlock()
 		})
 	}
+	a.wg.Wait()
 }
 
 // run performs periodic connection checks and reconnection
@@ -136,4 +142,3 @@ func (a *AutoReconnector) GetAttempts() int64 {
 	defer a.mu.Unlock()
 	return a.attempts
 }
-

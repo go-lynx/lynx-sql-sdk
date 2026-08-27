@@ -89,6 +89,9 @@ type SQLPlugin struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// Tracks plugin-owned background goroutines (pool warmup) so CleanupTasks can wait for them
+	wg sync.WaitGroup
+
 	// Last successful ping time for connection validation
 	lastPingTime atomic.Int64
 }
@@ -245,8 +248,23 @@ func (p *SQLPlugin) validateConfig() error {
 	return nil
 }
 
-// StartupTasks performs startup initialization with retry support
+// StartupTasks performs startup initialization with retry support.
+// It is the legacy (non-cancellable) entrypoint and delegates to
+// StartupTasksContext with a background context.
 func (p *SQLPlugin) StartupTasks() error {
+	return p.StartupTasksContext(context.Background())
+}
+
+// StartupTasksContext performs startup initialization with retry support while
+// honoring ctx: the connection attempt (open, ping, verify query, retry
+// back-off) is bound to ctx, and cancellation between steps aborts startup
+// without leaving a half-open pool behind.
+func (p *SQLPlugin) StartupTasksContext(ctx context.Context) error {
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("sql plugin startup canceled before execution: %w", err)
+	}
+
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
 
@@ -256,20 +274,42 @@ func (p *SQLPlugin) StartupTasks() error {
 	if p.closing.Load() {
 		return ErrAlreadyClosed
 	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("sql plugin startup canceled: %w", err)
+	}
 
 	log.Infof("Initializing database connection for %s", p.Name())
 
+	// Bind the connection attempt to both the caller's ctx and the plugin's own
+	// lifetime ctx so either a lifecycle timeout or a plugin shutdown aborts it.
+	connCtx, cancelConn := context.WithCancel(ctx)
+	defer cancelConn()
+	stopLink := context.AfterFunc(p.ctx, cancelConn)
+	defer stopLink()
+
+	// Attempt connection with retry if enabled
 	var db *sql.DB
 	var err error
 
 	if p.config.RetryEnabled {
-		db, err = p.connectWithRetryContext(p.ctx)
+		db, err = p.connectWithRetryContext(connCtx)
 	} else {
-		db, err = p.connectWithContext(p.ctx)
+		db, err = p.connectWithContext(connCtx)
 	}
 
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("sql plugin startup canceled while connecting: %w", errors.Join(ctxErr, err))
+		}
 		return err
+	}
+
+	// Do not publish the pool if the caller gave up while we were connecting.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			log.Warnf("Error closing database connection for %s after canceled startup: %v", p.Name(), closeErr)
+		}
+		return fmt.Errorf("sql plugin startup canceled after connect: %w", ctxErr)
 	}
 
 	dialect := p.getDialectFromDriver(p.config.Driver)
@@ -283,18 +323,30 @@ func (p *SQLPlugin) StartupTasks() error {
 	// Warmup/maintain the pool asynchronously so plugin startup never blocks on
 	// creating multiple idle connections.
 	if p.config.WarmupEnabled {
-		go p.maintainMinPoolSize(p.ctx)
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.maintainMinPoolSize(p.ctx)
+		}()
 	}
+
+	// Background components are published under p.mu so CleanupTasks can read them
+	// without holding lifecycleMu (see CleanupTasks for the ordering rationale).
+	var (
+		healthChecker *HealthChecker
+		poolMonitor   *PoolMonitor
+		autoReconnect *AutoReconnector
+		leakDetector  *LeakDetector
+	)
 
 	// Start health checker if configured.
 	// Health checker only reports health state; AutoReconnector handles recovery.
 	if p.config.HealthCheckInterval > 0 {
-		p.healthChecker = NewHealthChecker(
+		healthChecker = NewHealthChecker(
 			p,
 			time.Duration(p.config.HealthCheckInterval)*time.Second,
 			p.config.HealthCheckQuery,
 		)
-		p.healthChecker.Start(p.ctx)
 	}
 
 	// Start pool monitor if enabled
@@ -305,23 +357,21 @@ func (p *SQLPlugin) StartupTasks() error {
 			WaitCount:       p.config.AlertThresholdWaitCount,
 			AlertCooldown:   time.Duration(p.config.AlertCooldown) * time.Second,
 		}
-		p.poolMonitor = NewPoolMonitor(
+		poolMonitor = NewPoolMonitor(
 			p,
 			time.Duration(p.config.MonitorInterval)*time.Second,
 			thresholds,
 		)
-		p.poolMonitor.Start(p.ctx)
 	}
 
 	// Start auto-reconnect if enabled.
 	// auto_reconnect_enabled: false is the only way to opt out.
 	if autoReconnectEnabled(p.config) {
-		p.autoReconnect = NewAutoReconnector(
+		autoReconnect = NewAutoReconnector(
 			p,
 			time.Duration(p.config.AutoReconnectInterval)*time.Second,
 			p.config.AutoReconnectMaxAttempts,
 		)
-		p.autoReconnect.Start(p.ctx)
 		maxAttemptsStr := "unlimited"
 		if p.config.AutoReconnectMaxAttempts > 0 {
 			maxAttemptsStr = fmt.Sprintf("%d", p.config.AutoReconnectMaxAttempts)
@@ -332,12 +382,31 @@ func (p *SQLPlugin) StartupTasks() error {
 
 	// Start leak detection if enabled
 	if p.config.LeakDetectionEnabled {
-		p.leakDetector = NewLeakDetector(
+		leakDetector = NewLeakDetector(
 			p,
 			time.Duration(p.config.LeakDetectionThreshold)*time.Second,
 			time.Duration(p.config.MonitorInterval)*time.Second,
 		)
-		p.leakDetector.Start(p.ctx)
+	}
+
+	p.mu.Lock()
+	p.healthChecker = healthChecker
+	p.poolMonitor = poolMonitor
+	p.autoReconnect = autoReconnect
+	p.leakDetector = leakDetector
+	p.mu.Unlock()
+
+	if healthChecker != nil {
+		healthChecker.Start(p.ctx)
+	}
+	if poolMonitor != nil {
+		poolMonitor.Start(p.ctx)
+	}
+	if autoReconnect != nil {
+		autoReconnect.Start(p.ctx)
+	}
+	if leakDetector != nil {
+		leakDetector.Start(p.ctx)
 	}
 
 	// Initialize query monitor if enabled (opt-in via GetQueryMonitor)
@@ -505,47 +574,112 @@ func (p *SQLPlugin) connectWithRetryContext(ctx context.Context) (*sql.DB, error
 	return nil, fmt.Errorf("failed to connect after %d attempts: %w", p.config.RetryMaxAttempts+1, lastErr)
 }
 
-// CleanupTasks performs cleanup on shutdown
+// CleanupTasks performs cleanup on shutdown. It is the legacy (non-cancellable)
+// entrypoint and delegates to CleanupTasksContext with a background context.
 func (p *SQLPlugin) CleanupTasks() error {
+	return p.CleanupTasksContext(context.Background())
+}
+
+// CleanupTasksContext performs cleanup on shutdown while honoring ctx.
+//
+// Shutdown is split into two phases that each run under ctx: stopping the
+// background collectors (health checker, pool monitor, auto-reconnect, leak
+// detector, warmup) and closing the *sql.DB. If ctx expires mid-phase the
+// function returns ctx.Err() immediately; the in-flight phase keeps running in
+// the background to completion so the pool is still released eventually, and
+// the plugin is left marked as closing so no new work is accepted.
+func (p *SQLPlugin) CleanupTasksContext(ctx context.Context) error {
+	ctx = normalizeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("sql plugin cleanup canceled before execution: %w", err)
+	}
+
 	if !p.closing.CompareAndSwap(false, true) {
 		return nil
 	}
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
 
 	log.Infof("Shutting down database connection for %s", p.Name())
 
-	// Cancel context — stops all background goroutines (health checker, pool monitor,
-	// auto-reconnect, leak detector, pool stats reporter).
+	// Stop background tasks. Each Stop() blocks until its goroutine has exited, so
+	// this must run before taking lifecycleMu: a health check or reconnect that is
+	// in flight may be waiting on lifecycleMu, and it will observe closing==true
+	// (and the cancelled ctx) as soon as it acquires the lock.
 	p.cancel()
 
-	if p.healthChecker != nil {
-		p.healthChecker.Stop()
-	}
-	if p.poolMonitor != nil {
-		p.poolMonitor.Stop()
-	}
-	if p.autoReconnect != nil {
-		p.autoReconnect.Stop()
-	}
-	if p.leakDetector != nil {
-		p.leakDetector.Stop()
-	}
+	p.mu.RLock()
+	healthChecker := p.healthChecker
+	poolMonitor := p.poolMonitor
+	autoReconnect := p.autoReconnect
+	leakDetector := p.leakDetector
+	p.mu.RUnlock()
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.db != nil {
-		if err := p.db.Close(); err != nil {
-			log.Warnf("Error closing database connection for %s: %v", p.Name(), err)
-		} else {
-			log.Infof("Database connection closed for %s", p.Name())
+	if err := runWithContext(ctx, func() error {
+		if healthChecker != nil {
+			healthChecker.Stop()
 		}
-		p.db = nil
+		if poolMonitor != nil {
+			poolMonitor.Stop()
+		}
+		if autoReconnect != nil {
+			autoReconnect.Stop()
+		}
+		if leakDetector != nil {
+			leakDetector.Stop()
+		}
+		// Wait for plugin-owned goroutines (pool warmup)
+		p.wg.Wait()
+		return nil
+	}); err != nil {
+		return fmt.Errorf("sql plugin cleanup canceled while stopping background tasks for %s: %w", p.Name(), err)
 	}
 
-	p.connected.Store(false)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("sql plugin cleanup canceled before closing pool for %s: %w", p.Name(), err)
+	}
+
+	// Close database connection. sql.DB.Close waits for in-flight queries, so it
+	// is bounded by ctx as well.
+	if err := runWithContext(ctx, func() error {
+		p.lifecycleMu.Lock()
+		defer p.lifecycleMu.Unlock()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+
+		if p.db != nil {
+			if err := p.db.Close(); err != nil {
+				log.Warnf("Error closing database connection for %s: %v", p.Name(), err)
+			} else {
+				log.Infof("Database connection closed for %s", p.Name())
+			}
+			p.db = nil
+		}
+		p.connected.Store(false)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("sql plugin cleanup canceled while closing pool for %s: %w", p.Name(), err)
+	}
+
 	return nil
+}
+
+// runWithContext runs fn in a goroutine and returns as soon as fn finishes or
+// ctx is done. The result channel is buffered so an abandoned fn never leaks a
+// blocked goroutine; callers only use ctx to bound how long they wait.
+func runWithContext(ctx context.Context, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if ctx.Done() == nil {
+		return fn()
+	}
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // GetDB returns the database connection.
@@ -560,6 +694,7 @@ func (p *SQLPlugin) GetDB() (*sql.DB, error) {
 // GetDBWithContext returns the database connection with context support.
 // When EnsureAliveBeforeHandout is true (default), it pings the pool before returning; on failure
 // it triggers Reconnect() once so the pool is not handed out when already broken.
+// When auto-reconnect is disabled, a broken pool is reported as an error and never replaced.
 // Do not cache the returned *sql.DB when auto-reconnect is enabled; after Reconnect() it becomes closed.
 func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 	ctx = normalizeContext(ctx)
@@ -568,6 +703,9 @@ func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 	}
 
 	if !p.IsConnectedContext(ctx) {
+		if !autoReconnectEnabled(p.config) {
+			return nil, ErrNotConnected
+		}
 		if reconnectErr := p.ReconnectContext(ctx); reconnectErr != nil {
 			return nil, fmt.Errorf("%w: reconnect failed: %v", ErrNotConnected, reconnectErr)
 		}
@@ -590,6 +728,11 @@ func (p *SQLPlugin) GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 		err := db.PingContext(pingCtx)
 		pingCancel()
 		if err != nil {
+			// Pool is broken or has no healthy connection; replace pool so we never hand out a closed db
+			if !autoReconnectEnabled(p.config) {
+				p.connected.Store(false)
+				return nil, fmt.Errorf("%w: pool unhealthy: %v", ErrNotConnected, err)
+			}
 			if reconnectErr := p.ReconnectContext(ctx); reconnectErr != nil {
 				return nil, fmt.Errorf("pool unhealthy and reconnect failed: %w", err)
 			}
@@ -622,6 +765,9 @@ func (p *SQLPlugin) GetValidatedConn(ctx context.Context) (*sql.Conn, error) {
 	if err != nil {
 		_ = conn.Close()
 		// One bad connection; try reconnect and one more time
+		if !autoReconnectEnabled(p.config) {
+			return nil, fmt.Errorf("connection validation failed: %w", err)
+		}
 		if reconnectErr := p.ReconnectContext(ctx); reconnectErr != nil {
 			return nil, fmt.Errorf("connection validation failed and reconnect failed: %w", err)
 		}
@@ -788,6 +934,11 @@ func (p *SQLPlugin) CheckHealthContext(ctx context.Context) error {
 	p.metricsRecorder.RecordHealthCheck(true)
 	p.lastPingTime.Store(time.Now().Unix())
 	return nil
+}
+
+// IsClosed reports whether CleanupTasks has been invoked; a closed plugin cannot be restarted.
+func (p *SQLPlugin) IsClosed() bool {
+	return p.closing.Load()
 }
 
 // IsConnected pings the database to verify the connection is live.

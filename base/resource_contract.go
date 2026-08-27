@@ -79,4 +79,3 @@ func (p *SQLPlugin) SharedProviderResourceName() string {
 	}
 	return p.Name() + sqlSharedProviderSuffix
 }
-

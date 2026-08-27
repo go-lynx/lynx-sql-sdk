@@ -19,15 +19,20 @@ type PoolMonitor struct {
 	stopChan      chan struct{}
 	stopOnce      sync.Once
 	stopped       bool
+	wg            sync.WaitGroup
 	// Track alert severity to adjust cooldown
 	lastSeverity string
+	// Cumulative wait stats observed at the previous sample; sql.DBStats counters
+	// are lifetime totals, so thresholds are applied to the per-interval delta.
+	lastWaitCount    int64
+	lastWaitDuration time.Duration
 }
 
 // PoolThresholds defines alert thresholds for connection pool monitoring
 type PoolThresholds struct {
 	UsagePercentage float64       // Alert when pool usage exceeds this (0.0-1.0)
-	WaitDuration    time.Duration // Alert when wait duration exceeds this
-	WaitCount       int64         // Alert when wait count exceeds this
+	WaitDuration    time.Duration // Alert when wait duration accumulated in one interval exceeds this
+	WaitCount       int64         // Alert when wait count accumulated in one interval exceeds this
 	AlertCooldown   time.Duration // Minimum time between alerts; 0 = default (60s)
 }
 
@@ -41,9 +46,9 @@ type Monitorable interface {
 func NewPoolMonitor(target Monitorable, interval time.Duration, thresholds *PoolThresholds) *PoolMonitor {
 	if thresholds == nil {
 		thresholds = &PoolThresholds{
-			UsagePercentage: 0.8,              // 80%
-			WaitDuration:    5 * time.Second,  // 5 seconds
-			WaitCount:       10,                // 10 waits
+			UsagePercentage: 0.8,             // 80%
+			WaitDuration:    5 * time.Second, // 5 seconds
+			WaitCount:       10,              // 10 waits
 		}
 	}
 
@@ -62,7 +67,11 @@ func NewPoolMonitor(target Monitorable, interval time.Duration, thresholds *Pool
 
 // Start starts the monitoring routine
 func (m *PoolMonitor) Start(ctx context.Context) {
-	go m.run(ctx)
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.run(ctx)
+	}()
 }
 
 // Stop stops the monitor
@@ -79,6 +88,7 @@ func (m *PoolMonitor) Stop() {
 			m.mu.Unlock()
 		})
 	}
+	m.wg.Wait()
 }
 
 // run performs periodic monitoring
@@ -106,39 +116,7 @@ func (m *PoolMonitor) run(ctx context.Context) {
 // checkAndAlert checks pool stats and triggers alerts if thresholds are exceeded
 func (m *PoolMonitor) checkAndAlert() {
 	stats := m.target.GetStats()
-	if stats == nil {
-		return // not connected
-	}
-
-	alerts := []string{}
-	severity := "warning"
-
-	// Check pool usage percentage
-	if stats.MaxOpenConnections > 0 {
-		usage := float64(stats.OpenConnections) / float64(stats.MaxOpenConnections)
-		if usage >= m.thresholds.UsagePercentage {
-			alerts = append(alerts, "high pool usage")
-			if usage >= 0.95 {
-				severity = "critical"
-			}
-		}
-	}
-
-	// Check wait duration
-	if stats.WaitDuration > m.thresholds.WaitDuration {
-		alerts = append(alerts, "high wait duration")
-		if stats.WaitDuration > m.thresholds.WaitDuration*2 {
-			severity = "critical"
-		}
-	}
-
-	// Check wait count
-	if stats.WaitCount > m.thresholds.WaitCount {
-		alerts = append(alerts, "high wait count")
-		if stats.WaitCount > m.thresholds.WaitCount*5 {
-			severity = "critical"
-		}
-	}
+	alerts, severity, waitCount, waitDuration := m.evaluate(stats)
 
 	// Log alerts if any
 	if len(alerts) > 0 {
@@ -156,7 +134,7 @@ func (m *PoolMonitor) checkAndAlert() {
 		m.mu.Unlock()
 
 		if shouldAlert {
-			log.Warnf("Connection pool alert [%s] for %s: %v (Open=%d/%d, InUse=%d, Idle=%d, WaitCount=%d, WaitDuration=%v)",
+			log.Warnf("Connection pool alert [%s] for %s: %v (Open=%d/%d, InUse=%d, Idle=%d, WaitCount=%d, WaitDuration=%v in last interval)",
 				severity,
 				m.target.Name(),
 				alerts,
@@ -164,8 +142,8 @@ func (m *PoolMonitor) checkAndAlert() {
 				stats.MaxOpenConnections,
 				stats.InUse,
 				stats.Idle,
-				stats.WaitCount,
-				stats.WaitDuration,
+				waitCount,
+				waitDuration,
 			)
 		}
 	} else {
@@ -178,3 +156,55 @@ func (m *PoolMonitor) checkAndAlert() {
 	}
 }
 
+// evaluate applies the thresholds to a stats sample and returns the triggered alerts,
+// the severity, and the per-interval wait count/duration used for the wait checks.
+// WaitCount/WaitDuration are cumulative in sql.DBStats, so the delta since the
+// previous sample is used; otherwise the alert would fire forever once the
+// lifetime total exceeded the threshold.
+func (m *PoolMonitor) evaluate(stats *ConnectionPoolStats) (alerts []string, severity string, waitCount int64, waitDuration time.Duration) {
+	severity = "warning"
+	if stats == nil {
+		return nil, severity, 0, 0
+	}
+
+	m.mu.Lock()
+	waitCount = stats.WaitCount - m.lastWaitCount
+	waitDuration = stats.WaitDuration - m.lastWaitDuration
+	if waitCount < 0 || waitDuration < 0 {
+		// Pool was replaced (e.g. reconnect) and counters reset.
+		waitCount = stats.WaitCount
+		waitDuration = stats.WaitDuration
+	}
+	m.lastWaitCount = stats.WaitCount
+	m.lastWaitDuration = stats.WaitDuration
+	m.mu.Unlock()
+
+	// Check pool usage percentage
+	if stats.MaxOpenConnections > 0 {
+		usage := float64(stats.OpenConnections) / float64(stats.MaxOpenConnections)
+		if usage >= m.thresholds.UsagePercentage {
+			alerts = append(alerts, "high pool usage")
+			if usage >= 0.95 {
+				severity = "critical"
+			}
+		}
+	}
+
+	// Check wait duration accumulated during the last interval
+	if waitDuration > m.thresholds.WaitDuration {
+		alerts = append(alerts, "high wait duration")
+		if waitDuration > m.thresholds.WaitDuration*2 {
+			severity = "critical"
+		}
+	}
+
+	// Check wait count accumulated during the last interval
+	if waitCount > m.thresholds.WaitCount {
+		alerts = append(alerts, "high wait count")
+		if waitCount > m.thresholds.WaitCount*5 {
+			severity = "critical"
+		}
+	}
+
+	return alerts, severity, waitCount, waitDuration
+}
